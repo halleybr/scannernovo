@@ -368,9 +368,7 @@ async function tick() {
   if (state.paused) return;
   try {
     const inplay = await fetchJSON(API + "/inplay/list.json", 25000, 2);
-    console.log('[ScannerGreen] API retornou:', inplay.events ? inplay.events.length : 0, 'jogos');
     const live = (inplay.events || []).filter(e => e && e.isLive && e.status === "live");
-    console.log('[ScannerGreen] Jogos live após filtro:', live.length);
     const ids = live.map(e => e.id);
     const now = Date.now();
 
@@ -415,7 +413,6 @@ async function tick() {
         forecast: (prev && prev.forecast) || state.todayForecast.get(e.id) || null,
       };
       state.matches.set(e.id, m);
-      console.log('[ScannerGreen] Jogo AO VIVO:', m.home, 'x', m.away, m.time || (m.minute + "'"), 'liveStats:', !!m.liveStats);
     }
 
     renderAll();
@@ -1648,18 +1645,13 @@ function resolveFinishedFromToday() {
 /* ---------------- render ---------------- */
 function renderAll() {
   const matches = Array.from(state.matches.values());
-  console.log('[ScannerGreen] renderAll: total jogos=', matches.length, 'ao vivo=', matches.filter(m => m.time !== "FT" && m.period !== "FT").length);
   for (const m of matches) {
     if (m.minute >= MIN_MINUTE) {
       m._sc = analyze(m);
       m._sug = m._sc.valid ? suggestEntry(m, m._sc) : null;
       m._reason = m._sug ? buildReason(m, m._sc, m._sug) : null;
       if (m._sug) ensureEntry(m, m._sc, m._sug);
-      console.log('[ScannerGreen] analyze:', m.home, 'x', m.away, 'min=', m.minute, 'score=', m._sc.score, 'valid=', m._sc.valid, 'liveStats=', !!m.liveStats);
-    } else {
-      console.log('[ScannerGreen] jogo ignorado por minuto insuficiente:', m.home, 'x', m.away, 'min=', m.minute);
-      m._sc = null; m._sug = null;
-    }
+    } else { m._sc = null; m._sug = null; }
     resolveWonLive(m);
   }
 
@@ -2082,7 +2074,6 @@ if (!state.history.length) {
   }
 }
 dedupeHistory();
-console.log('[ScannerGreen] state.matches antes tick:', state.matches.size);
 tick();
 </script>
 </body>
