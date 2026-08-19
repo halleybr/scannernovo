@@ -1656,7 +1656,10 @@ function renderAll() {
       m._reason = m._sug ? buildReason(m, m._sc, m._sug) : null;
       if (m._sug) ensureEntry(m, m._sc, m._sug);
       console.log('[ScannerGreen] analyze:', m.home, 'x', m.away, 'min=', m.minute, 'score=', m._sc.score, 'valid=', m._sc.valid, 'liveStats=', !!m.liveStats);
-    } else { m._sc = null; m._sug = null; }
+    } else {
+      console.log('[ScannerGreen] jogo ignorado por minuto insuficiente:', m.home, 'x', m.away, 'min=', m.minute);
+      m._sc = null; m._sug = null;
+    }
     resolveWonLive(m);
   }
 
@@ -2074,11 +2077,12 @@ if (!state.history.length) {
   const bak = loadLS("rb_history_bak", []);
   if (bak.length) {
     state.history = bak;
-    bak.forEach(x => x.tgSent = true); // recuperadas não re-enviam alerta ao Telegram
+    bak.forEach(x => x.tgSent = true);
     save();
   }
 }
 dedupeHistory();
+console.log('[ScannerGreen] state.matches antes tick:', state.matches.size);
 tick();
 </script>
 </body>
