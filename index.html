@@ -402,6 +402,7 @@ async function tick() {
       const prev = state.matches.get(e.id) || null;
       const m = {
         id: e.id, slug: e.slug, fi_id: e.fi_id, league: (e.league && e.league.name) || "N/D",
+        leagueId: numOrNull(e.league && e.league.id),
         home: e.home || "—", away: e.away || "—",
         scoreHome: e.scoreHome ?? 0, scoreAway: e.scoreAway ?? 0,
         minute: numOrNull(e.minute) ?? 0, period: e.period || "", time: e.time || "",
@@ -409,7 +410,7 @@ async function tick() {
         odds: Array.isArray(e.odds) ? e.odds : [],
         redH: !!e.redCardHome, redA: !!e.redCardAway,
         hasCornersMarket: !!e.has_corners_market,
-        liveStats: ls || (prev && prev.liveStats) || null,   // mantém último dado bom se a chamada falhar
+        liveStats: ls || (prev && prev.liveStats) || null,
         statsAge: ls ? now : (prev ? prev.statsAge : null),
         forecast: (prev && prev.forecast) || state.todayForecast.get(e.id) || null,
       };
@@ -709,7 +710,7 @@ function analyze(m) {
   ];
   const availParts = parts.filter(p => p.avail);
   const totalW = availParts.reduce((a, p) => a + p.w, 0);
-  const leagueId = numOrNull((m.leagueObj && m.leagueObj.id) ?? (e && e.league && e.league.id)) ?? null;
+  const leagueId = numOrNull(m.leagueId) ?? null;
   const leaguePenalty = (leagueId != null && !TOP_LEAGUE_IDS.has(leagueId)) ? 0.95 : 1;
   const matMin = Math.max(minute, 1);
   const maturity = matMin <= 45 ? 0.75 + 0.25 * clamp(matMin / 45, 0, 1) : 1;
