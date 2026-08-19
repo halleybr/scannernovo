@@ -286,7 +286,7 @@
    ============================================================ */
 
 const API = "https://m.robobet.app/api";
-const BUILD = "2026-08-18T05:00-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
+const BUILD = "2026-08-18T23:36-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
 const MIN_SCORE = 70;         // filtro mínimo (spec §8)
 const MIN_MINUTE = 20;        // antes disso os dados são finos demais para justificar entrada
 const MOM_WINDOW = 10;        // janela recente de momentum (minutos)
@@ -552,13 +552,17 @@ function analyze(m) {
   // Compara com valores anteriores para detectar se chutes estão aumentando
   const prevShots = m.prevShots || 0;
   const prevSot = m.prevSot || 0;
+  const prevDang = m.prevDang || 0;
   const shotsRising = prevShots > 0 && shots > prevShots + 2; // subiu mais de 2 chutes
   const sotRising = prevSot > 0 && sot > prevSot + 1; // subiu mais de 1 chute no alvo
+  const dangRising = prevDang > 0 && dang > prevDang + 3; // subiu mais de 3 ataques perigosos
   // Armazenar para próxima comparação
   m.prevShots = shots;
   m.prevSot = sot;
+  m.prevDang = dang;
   res.shotsRising = shotsRising;
   res.sotRising = sotRising;
+  res.dangRising = dangRising;
 
   /* ---- xG (30 pts) ---- */
   let xgScore = 0;
@@ -638,6 +642,17 @@ function analyze(m) {
   /* ---- Ataques perigosos (10 pts) ---- */
   const dangPace = dang / Math.min(minute, 90);
   const dangScore = 10 * clamp(dangPace / 0.75, 0, 1);  // 0.75/min ≈ 67/90 = nível alto
+
+  /* ---- Jogo muito movimentado (gatilho para entrada de gols por pressão) ---- */
+  // thresholds separados por tempo (1T vs 2T) e por nível de pressão
+  // Referência: bots de apostas ao vivo usam ~3-5 chutes no alvo no 1T e ~5-8 no 2T como sinal forte
+  const isFirstHalf = minute <= 45;
+  const pressureRising = (shotsRising && sotRising && dangRising && dang >= (isFirstHalf ? 10 : 18));
+  const sustainedPressure = sot >= (isFirstHalf ? 3 : 5) && dang >= (isFirstHalf ? 10 : 18) && shots >= (isFirstHalf ? 6 : 10);
+  const veryHighPressure = sot >= (isFirstHalf ? 5 : 8) && dang >= (isFirstHalf ? 18 : 30) && shots >= (isFirstHalf ? 10 : 16);
+  res.pressureRising = pressureRising;
+  res.sustainedPressure = sustainedPressure;
+  res.veryHighPressure = veryHighPressure;
 
   /* ---- reequilíbrio quando algum indicador não está disponível ---- */
   const parts = [
@@ -866,7 +881,33 @@ function suggestEntry(m, sc) {
   out.sort((a, b) => b.prio - a.prio);
   const primary = out[0] || null;
   const strong = primary && (sc.score >= 85) && (primary.type !== "goals" || primary.prob >= 70);
-  return { entries: out.slice(0, 3), primary, strong, goals, cornersExp };
+
+  // condição especial: jogo muito movimentado → entrada de gols por pressão de ataques
+  if (!primary && !htGoalPushed && !lateGame) {
+    const hasGoalMarket = over.over_05_ft || over.over_15_ft || over.over_25_ft;
+    if (hasGoalMarket && (sc.sustainedPressure || sc.veryHighPressure || sc.pressureRising)) {
+      const pick = over.over_05_ft || over.over_15_ft || over.over_25_ft;
+      const label = over.over_05_ft ? "Over 0.5 Gol" : (over.over_15_ft ? "Over 1.5 Gols" : "Over 2.5 Gols");
+      const fProb = pick ? numOrNull(pick.probability) : null;
+      const fOdd = pick ? numOrNull(pick.market_odd) : null;
+      const need = over.over_05_ft ? 1 : (over.over_15_ft ? 2 : 3);
+      const lam = sc.xgAvail ? sc.xgTotal : (sc.estXG || goals);
+      const prob = fProb || Math.round(poissonProb(lam, need) * 100);
+      const risingBonus = sc.pressureRising ? 2 : 0;
+      const level = sc.veryHighPressure ? 3 : (sc.sustainedPressure ? 2 : 1);
+      out.push({
+        type: "goals", label: label,
+        odd: fOdd,
+        prob: Math.round(prob),
+        prio: 4 + level + (fOdd != null ? 1 : 0) + risingBonus,
+        source: sc.veryHighPressure ? "very-high-pressure" : (sc.sustainedPressure ? "sustained-pressure" : "pressure-rising"),
+      });
+    }
+  }
+
+  const finalPrimary = out[0] || null;
+  const finalStrong = finalPrimary && (sc.score >= 85) && (finalPrimary.type !== "goals" || finalPrimary.prob >= 70);
+  return { entries: out.slice(0, 3), primary: finalPrimary, strong: finalStrong, goals, cornersExp };
 }
 
 function buildReason(m, sc, sug) {
@@ -880,6 +921,9 @@ function buildReason(m, sc, sug) {
   bits.push(pl(n.corners, "escanteio"));
   bits.push(pl(n.shots, "chute") + ` (${n.sot} no alvo)`);
   if (n.dang > 0) bits.push(pl(n.dang, "ataque perigoso", "ataques perigosos"));
+  if (sc.veryHighPressure) bits.push("pressão muito alta");
+  else if (sc.sustainedPressure) bits.push("pressão sustentada");
+  else if (sc.pressureRising) bits.push("pressão subindo");
   if (sc.fire || sc.ball || sc.combo) bits.push(sc.fire && sc.ball ? "Fire+Ball ativos" : (sc.fire ? "Fire ativo" : (sc.ball ? "Ball ativo" : "Combo ativo")));
   if (m.redH || m.redA) bits.push("cartão vermelho");
   if (sug.cornersExp != null) bits.push(`escanteios esperados ${fmt(sug.cornersExp, 1)}`);
@@ -962,6 +1006,7 @@ function maybeAlerts() {
     if (!sc || !sc.valid) continue;
     const prev = state.prevScores.get(m.id);
     const score = sc.score;
+    const lateGame = m.minute > 85;
     if (!prev || prev.score < MIN_SCORE) {
       if (prev && prev.present === false) continue; // já avisado que saiu
       const sug = m._sug;
@@ -1005,7 +1050,6 @@ function maybeAlerts() {
       }
     }
     // Alerta de momentum + xG estimado (entrada por pressão)
-    const lateGame = m.minute > 85;
     if (sc.momentumEntryScore >= 0.5 && sc.momAvail && m.minute >= 15 && !lateGame) {
       const sug = m._sug;
       const hasGoalEntry = sug && sug.entries && sug.entries.some(e => e.type === 'goals');
@@ -1035,6 +1079,26 @@ function maybeAlerts() {
           t: "detected", at: now,
           title: `🎯 CHUTES SUBINDO — ${m.home} x ${m.away}`,
           body: `${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway} · ${parts.join(' · ')} · Score ${sc.score}/100`,
+        });
+      }
+    }
+    // Alerta de pressão de ataques perigosos (chutes + no alvo + ataques perigosos subindo)
+    if ((sc.pressureRising || sc.sustainedPressure || sc.veryHighPressure) && m.minute >= 10 && !lateGame) {
+      const sug = m._sug;
+      const hasGoalEntry = sug && sug.entries && sug.entries.some(e => e.type === 'goals');
+      const halfLabel = m.minute <= 45 ? '1T' : '2T';
+      const tag = sc.veryHighPressure ? 'PRESSÃO ALTA' : (sc.sustainedPressure ? 'PRESSÃO SUSTENTADA' : 'PRESSÃO SUBINDO');
+      const dup = state.alerts.some(a => a.t === "detected" && a.title.includes(m.home) && a.title.includes(tag) && Math.abs(a.at - now) < 5 * 60_000);
+      if (!dup && hasGoalEntry) {
+        const parts = [`${halfLabel}`, `${pl(sc.num.shots, "chute")} (${sc.num.sot} no alvo)`, `${pl(sc.num.dang, "ataque perigoso", "ataques perigosos")}`];
+        if (sc.shotsRising) parts.push("chutes ↑");
+        if (sc.sotRising) parts.push("no alvo ↑");
+        if (sc.dangRising) parts.push("ataques perigosos ↑");
+        if (sc.momDir) parts.push(`momentum: ${sc.momDir === 'home' ? m.home : m.away}`);
+        state.alerts.unshift({
+          t: "detected", at: now,
+          title: `🔥 ${tag} — ${m.home} x ${m.away}`,
+          body: `${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway} · ${parts.join(' · ')} → 🟢 Entrada de gols · Score ${sc.score}/100`,
         });
       }
     }
