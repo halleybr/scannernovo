@@ -90,8 +90,11 @@
   tr:hover td{background:rgba(255,255,255,.02)}
   .score-pill{display:inline-block;min-width:52px;text-align:center;font-weight:700;border-radius:8px;
     padding:3px 8px;font-size:13px}
-  .s80{background:rgba(34,197,94,.16);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
-  .s70{background:rgba(245,158,11,.14);color:#fbbf24;border:1px solid rgba(245,158,11,.35)}
+   .s80{background:rgba(34,197,94,.16);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
+   .s70{background:rgba(245,158,11,.14);color:#fbbf24;border:1px solid rgba(245,158,11,.35)}
+   .score-bar{height:4px;border-radius:3px;background:var(--line);margin-top:5px;overflow:hidden;max-width:64px}
+   .score-bar i{display:block;height:100%;background:linear-gradient(90deg,#16a34a,#4ade80)}
+   .rk-press{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
   .teams{font-weight:600}
   .lg{color:var(--dim);font-size:11px}
   .entry-tag{font-size:12px;font-weight:600;color:#4ade80;white-space:nowrap}
@@ -214,7 +217,7 @@
         <div class="opps85-grid" id="opps85"></div>
       </div>
 
-      <h2 class="destaque">🔥 MELHORES JOGOS AO VIVO <span class="n">somente partidas com intensidade ≥ 70/100 e dica de entrada</span>
+      <h2 class="destaque">🔥 MELHORES JOGOS AO VIVO <span class="n">partidas com intensidade ≥ 70/100, ranqueadas por score</span>
         <span class="hot" id="hot-badge" style="display:none"></span></h2>
       <div id="ranking"></div>
 
@@ -287,7 +290,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T18:30-03:00";
+const BUILD = "2026-08-19T18:48-03:00";
 const MIN_SCORE = 70;
 const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
 const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
@@ -1753,9 +1756,9 @@ function renderAlerts() {
 
 function renderRanking(opps) {
   const box = $("ranking");
-  // só entram na lista os jogos com dica de entrada (sug.primary)
-  const withEntry = opps.filter(m => m._sug && m._sug.primary);
-  const hot = withEntry.filter(m => m._sc.score >= 85).length;
+  // todos os jogos válidos (score >= 70), já ranqueados por score (e minuto)
+  const valid = opps.filter(m => m._sc && m._sc.valid);
+  const hot = valid.filter(m => m._sc.score >= 85).length;
   const badge = $("hot-badge");
   if (hot) {
     badge.textContent = hot + " " + (hot === 1 ? "oportunidade" : "oportunidades") + " 85+";
@@ -1763,37 +1766,37 @@ function renderRanking(opps) {
   } else {
     badge.style.display = "none";
   }
-  if (!withEntry.length) {
-    box.innerHTML = `<div class="empty"><b>Nenhuma oportunidade com dica de entrada neste momento.</b><br><br>` +
-      `<span style="color:var(--dim)">Nenhuma partida ao vivo atingiu ${MIN_SCORE}/100 com mercado/odd favorável na fonte de dados.<br>` +
-      `O modelo não força entrada — os dados são atualizados automaticamente.</span></div>`;
+  if (!valid.length) {
+    box.innerHTML = `<div class="empty"><b>Nenhum jogo ao vivo com intensidade ≥ ${MIN_SCORE}/100 neste momento.</b><br><br>` +
+      `<span style="color:var(--dim)">As partidas aparecem aqui assim que atingem pontuação suficiente.<br>` +
+      `Os dados são atualizados automaticamente a cada ciclo.</span></div>`;
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table><thead><tr>
-    <th>#</th><th>Jogo</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Esc</th><th>Entrada</th><th>Valor</th>
-  </tr></thead><tbody>` + withEntry.map((m, i) => {
-    const sc = m._sc, sug = m._sug;
+    <th>#</th><th>Jogo</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Esc</th><th>Pressão</th>
+  </tr></thead><tbody>` + valid.map((m, i) => {
+    const sc = m._sc;
     const pill = sc.score >= 80 ? "s80" : "s70";
-    const entryIcon = sug.primary.type === "corners" ? "🚩" : (sug.primary.type === "btts" ? "🎯" : (sug.primary.type === "next-goal" ? "⚡" : (sug.primary.type === "combo" ? "💥" : "⚽")));
-    const valueBadge = sug.valueBet != null && sug.valueBet > 0
-      ? `<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">+${sug.valueBet}% edge</span>`
-      : '';
-    const kellyBadge = sug.primary?.kellyPct != null
-      ? `<span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Kelly ${sug.primary.kellyPct}%</span>`
-      : '';
-    const strengthBadge = sug.entryStrength === "forte"
-      ? '<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">Forte</span>'
-      : (sug.entryStrength === "interessante" ? '<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">Interessante</span>' : '');
+    const pressureTag = sc.veryHighPressure ? '<span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">Alta</span>'
+      : (sc.sustainedPressure ? '<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">Sustentada</span>'
+      : (sc.pressureRising ? '<span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Subindo</span>' : ''));
+    const pressBadges = [];
+    if (pressureTag) pressBadges.push(pressureTag);
+    if (sc.attackWave) pressBadges.push('<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">🌊 Onda</span>');
+    if (sc.macdPressTeam && sc.macdRising) pressBadges.push(`<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">${esc(sc.macdPressTeam === "home" ? m.home : m.away)} pressionando</span>`);
+    const tags = [];
+    if (sc.recurringPattern) tags.push(' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Recorrente</span>');
+    if (sc.bttsCandidate) tags.push(' <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">🎯 BTTS</span>');
     return `<tr>
       <td>${i + 1}️⃣</td>
-      <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}${sc?.recurringPattern ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Recorrente</span>' : ''}</div></td>
+      <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}${tags.join("")}</div></td>
       <td>${esc(m.time || (m.minute + "'"))}</td>
       <td>${m.scoreHome} x ${m.scoreAway}</td>
-      <td><span class="score-pill ${pill}">${sc.score}/100</span></td>
+      <td><span class="score-pill ${pill}">${sc.score}/100</span><div class="score-bar"><i style="width:${sc.score}%"></i></div></td>
       <td>${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="lg">(est)</span>` : '<span class="nd">N/D</span>')}</td>
       <td>${momText(m, sc)}</td>
       <td>${sc.num.corners}</td>
-      <td><span class="entry-tag hl ${sug.primary.type === "corners" ? "alt" : ""}">${entryIcon} ${esc(sug.primary.label)}</span>${strengthBadge}${valueBadge}${kellyBadge}</td>
+      <td class="rk-press">${pressBadges.join("") || '<span class="nd">—</span>'}</td>
     </tr>`;
   }).join("") + "</tbody></table></div>";
 }
