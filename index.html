@@ -423,7 +423,6 @@ async function tick() {
     state.lastError = null;
     $("errbox").style.display = "none";
   } catch (err) {
-    console.error('[ScannerGreen] Erro no tick():', err);
     state.lastError = String(err && err.message || err);
     $("errbox").textContent = "⚠️ Não foi possível atualizar os dados ao vivo (" + state.lastError +
       "). Mantendo os últimos dados válidos na tela — nova tentativa em instantes.";
@@ -699,39 +698,6 @@ function analyze(m) {
   res.recurringPattern = tpHist.count >= 2;
   res.pressureHistoryCount = tpHist.count;
 
-  // ---- Onda de ataques (attack wave) ----
-  // 3+ ataques perigosos nos últimos ciclos = pressão iminente
-  const attackWave = dangRising && dang >= (isFirstHalf ? 12 : 20);
-  res.attackWave = attackWave;
-
-  // ---- Contexto de placar ----
-  const goalsTotal = (numOrNull(H.goals) ?? 0) + (numOrNull(A.goals) ?? 0);
-  const scoreDiff = (numOrNull(H.goals) ?? 0) - (numOrNull(A.goals) ?? 0);
-  const is0x0 = goalsTotal === 0;
-  const isTrailing = scoreDiff < 0;
-  const isWinning = scoreDiff > 0;
-  res.scoreContext = { is0x0, isTrailing, isWinning, goalsTotal, scoreDiff };
-
-  // ---- Cartão vermelho como multiplicador ----
-  const redCardMultiplier = (m.redH || m.redA) ? 1.5 : 1.0;
-  res.redCardMultiplier = redCardMultiplier;
-
-  // ---- BTTS (Both Teams To Score) ----
-  const homeDang = numOrNull(H.dangerous_attacks) ?? 0;
-  const awayDang = numOrNull(A.dangerous_attacks) ?? 0;
-  const homeSot = numOrNull(H.on_target) ?? 0;
-  const awaySot = numOrNull(A.on_target) ?? 0;
-  const bttsCandidate = homeDang >= 5 && awayDang >= 5 && homeSot >= 2 && awaySot >= 2 && goalsTotal === 0;
-  res.bttsCandidate = bttsCandidate;
-
-  // ---- Calibração de probabilidade por tempo ----
-  // 1T: janela maior, 2T: janela média, 75+: janela menor
-  const timeFactor = minute <= 45 ? 1.2 : (minute <= 75 ? 1.0 : 0.75);
-  res.timeFactor = timeFactor;
-
-  // ---- Detecção de valor (value betting) ----
-  res.valueBet = null;
-
   /* ---- reequilíbrio quando algum indicador não está disponível ---- */
   const parts = [
     { key: "xg", w: 30, v: xgScore, avail: xgAvail, label: "xG" },
@@ -780,7 +746,6 @@ function analyze(m) {
   res.valid = score > 0 && score >= MIN_SCORE;
 
   // ---- Eficiência de conversão (baseada em xG + finalização) ----
-  const goalsTotal = (numOrNull(H.goals) ?? 0) + (numOrNull(A.goals) ?? 0);
   const shotsOnTarget = sot;
   const totalShots = shots;
   
