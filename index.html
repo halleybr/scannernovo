@@ -278,14 +278,14 @@
 "use strict";
 /* ============================================================
    SCANNERGREEN — SCANNER AO VIVO
-   Fonte exclusiva de dados: RoboBet.app (m.robobet.app/api)
+    Fonte exclusiva de dados: RoboBet.app (robobet.app/api)
    - GET /inplay/list.json        → jogos ao vivo (times, placar, minuto, odd 1x2, mercados abertos)
    - GET /events/{id}/live-stats  → estatísticas ao vivo + momentum + pressão de escanteio + indicadores
    - GET /events/today            → overlay com odds/probabilidades dos mercados (gols/escanteios)
    Nenhum número é inventado: se o dado não existe na API, mostramos N/D.
    ============================================================ */
 
-const API = "https://m.robobet.app/api";
+const API = "https://robobet.app/api";
 const BUILD = "2026-08-19T00:30-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
 const MIN_SCORE = 70;         // filtro mínimo (spec §8)
 const MIN_MINUTE = 20;        // antes disso os dados são finos demais para justificar entrada
