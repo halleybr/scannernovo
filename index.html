@@ -219,7 +219,8 @@
       <div id="ranking"></div>
 
       <section id="active-sec" style="display:none">
-        <h2>🎯 ENTRADAS ATIVAS <span class="n" id="active-count"></span></h2>
+        <h2>🎯 ENTRADAS ATIVAS <span class="n" id="active-count"></span>
+          <button id="clearActive" title="Remove todas as entradas em aberto (ao vivo)">🧹 Limpar</button></h2>
         <div class="tbl-wrap"><table id="active"><thead>
           <tr><th>Jogo</th><th>Min</th><th>Placar</th><th>Entrada</th><th>Odd</th><th>Score</th><th>Entrou</th><th>Status</th></tr>
         </thead><tbody></tbody></table></div>
@@ -286,7 +287,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T18:22-03:00";
+const BUILD = "2026-08-19T18:30-03:00";
 const MIN_SCORE = 70;
 const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
 const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
@@ -2117,6 +2118,13 @@ $("pause").addEventListener("click", () => {
   if (!state.paused) tick(); else scheduleNext();
 });
 $("refresh").addEventListener("click", () => { $("hud-next").textContent = "atualizando…"; tick(); });
+$("clearActive").addEventListener("click", () => {
+  const open = state.history.filter(h => h.result == null).length;
+  if (!open) return;
+  if (!confirm(`Remover ${open} entrada(s) ao vivo (em aberto)? As resolvidas (green/red) permanecem no histórico.`)) return;
+  state.history = state.history.filter(h => h.result != null);
+  save(); renderAll();
+});
 
 /* debug (útil para testes) */
 window.__rb = { state, analyze, suggestEntry, buildReason, tg: { tgPush, tgSend, get tg() { return tg; } } };
