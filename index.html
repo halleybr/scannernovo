@@ -290,7 +290,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T18:48-03:00";
+const BUILD = "2026-08-19T19:05-03:00";
 const MIN_SCORE = 70;
 const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
 const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
@@ -1690,11 +1690,12 @@ function resolveFinishedFromToday() {
 function renderAll() {
   const matches = Array.from(state.matches.values());
   for (const m of matches) {
-    if (m.minute >= MIN_MINUTE) {
+    if (m.minute >= 1) {   // MELHORES JOGOS AO VIVO: monitora desde o minuto 1
       m._sc = analyze(m);
       m._sug = m._sc.valid ? suggestEntry(m, m._sc) : null;
       m._reason = m._sug ? buildReason(m, m._sc, m._sug) : null;
-      if (m._sug) ensureEntry(m, m._sc, m._sug);
+      // entradas só após a maturidade mínima e fora do intervalo (HT)
+      if (m._sug && m.minute >= MIN_MINUTE && m.period !== "HT") ensureEntry(m, m._sc, m._sug);
     } else { m._sc = null; m._sug = null; }
     resolveWonLive(m);
   }
@@ -1756,8 +1757,14 @@ function renderAlerts() {
 
 function renderRanking(opps) {
   const box = $("ranking");
-  // todos os jogos válidos (score >= 70), já ranqueados por score (e minuto)
-  const valid = opps.filter(m => m._sc && m._sc.valid);
+  // todos os jogos válidos (score >= 70); HT vai para o final da fila
+  const valid = opps.filter(m => m._sc && m._sc.valid)
+    .sort((a, b) => {
+      const aHT = (a.period === "HT" || a.time === "HT") ? 1 : 0;
+      const bHT = (b.period === "HT" || b.time === "HT") ? 1 : 0;
+      if (aHT !== bHT) return aHT - bHT;            // intervalo (HT) no fim
+      return (b._sc.score - a._sc.score) || (b.minute - a.minute);
+    });
   const hot = valid.filter(m => m._sc.score >= 85).length;
   const badge = $("hot-badge");
   if (hot) {
@@ -1790,7 +1797,7 @@ function renderRanking(opps) {
     return `<tr>
       <td>${i + 1}️⃣</td>
       <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}${tags.join("")}</div></td>
-      <td>${esc(m.time || (m.minute + "'"))}</td>
+      <td>${esc(m.time || (m.minute + "'"))}${m.period === "HT" || m.time === "HT" ? ' <span class="badge">HT</span>' : ''}</td>
       <td>${m.scoreHome} x ${m.scoreAway}</td>
       <td><span class="score-pill ${pill}">${sc.score}/100</span><div class="score-bar"><i style="width:${sc.score}%"></i></div></td>
       <td>${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="lg">(est)</span>` : '<span class="nd">N/D</span>')}</td>
