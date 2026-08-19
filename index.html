@@ -286,12 +286,13 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T00:30-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
-const MIN_SCORE = 70;         // filtro mínimo (spec §8)
-const MIN_MINUTE = 20;        // antes disso os dados são finos demais para justificar entrada
-const MOM_WINDOW = 10;        // janela recente de momentum (minutos)
+const BUILD = "2026-08-19T01:53-03:00";
+const MIN_SCORE = 70;
+const MIN_MINUTE = 12;
+const MOM_WINDOW = 10;
 const HISTORY_LIMIT = 200;
 const ALERT_LIMIT = 40;
+const TOP_LEAGUE_IDS = new Set([39, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
 
 /* ---------------- estado ---------------- */
 const state = {
@@ -708,13 +709,16 @@ function analyze(m) {
   ];
   const availParts = parts.filter(p => p.avail);
   const totalW = availParts.reduce((a, p) => a + p.w, 0);
-  // fator de maturidade: partidas jovens têm ritmos por minuto instáveis → leve penalidade
-  const maturity = minute < 45 ? 0.7 + 0.3 * clamp(minute / 45, 0, 1) : 1;
-  // xG ausente = indicador-chave faltando → penalidade (dados insuficientes para nota cheia)
-  const xgFactor = xgAvail ? 1 : 0.88;
+  const leagueId = numOrNull((m.leagueObj && m.leagueObj.id) ?? (e && e.league && e.league.id)) ?? null;
+  const leaguePenalty = (leagueId != null && !TOP_LEAGUE_IDS.has(leagueId)) ? 0.95 : 1;
+  const matMin = Math.max(minute, 1);
+  const maturity = matMin <= 45 ? 0.75 + 0.25 * clamp(matMin / 45, 0, 1) : 1;
+  const momBoost = (momMag >= 20 || momAvail) ? 0.02 : 0;
+  const xgFactor = xgAvail ? 1 : (0.90 + momBoost);
+  const finalFactor = maturity * xgFactor * leaguePenalty;
   const comps = {};
-  for (const p of availParts) comps[p.key] = Math.round(p.v * (100 / totalW) * maturity * xgFactor);
-  const score = Math.round(availParts.reduce((a, p) => a + p.v * (100 / totalW), 0) * maturity * xgFactor);
+  for (const p of availParts) comps[p.key] = Math.round(p.v * (100 / totalW) * finalFactor);
+  const score = Math.round(availParts.reduce((a, p) => a + p.v * (100 / totalW), 0) * finalFactor);
 
   /* ---- direção da pressão (para sugestão de mercado) ---- */
   const sup = ls.superiority || null;
@@ -820,13 +824,17 @@ function suggestEntry(m, sc) {
   const cornersExp = (f.corners && f.corners.match_total && numOrNull(f.corners.match_total.value)) ?? null;
   const goals = m.scoreHome + m.scoreAway;
   const minute = Math.max(m.minute, 1);
+  const injuryTime = m.injuryTime || 0;
+  const totalMinute = minute + injuryTime;
+  const remaining = Math.max(90 - totalMinute, 0);
+  const almostEnded = remaining < 3;
 
-  // após 85' de jogo não se sugere mais entradas de gols (pouco tempo restante)
-  const lateGame = m.minute > 85;
-  // no 1º tempo até os 38', sinal de gol vira entrada do 1º tempo (e não do jogo inteiro),
-  // usando a odd do mercado "Over 0.5 Gol 1º Tempo" (over_05_ht) da RoboBet
+  // late game: para Over 0.5 ainda permitir se xG estimado alto ou xG subindo forte
+  const lateGame = m.minute > 85 && !(sc.estXG != null && sc.estXG >= 1.0) && !(sc.xgAvail && sc.xgRising && sc.momMag >= 20);
+  const goalsBlocked = lateGame || almostEnded;
+  // no 1º tempo até os 38', sinal de gol vira entrada do 1º tempo
   let htGoalPushed = false;
-  if (m.minute <= 38 && goals < 1) {
+  if (m.minute <= 38 && goals < 1 && !goalsBlocked) {
     const ht = over.over_05_ht || null;
     const htProb = ht ? numOrNull(ht.probability) : null;
     const htOdd = ht ? (numOrNull(ht.market_odd) ?? numOrNull(ht.fair_odd)) : null;
@@ -850,25 +858,25 @@ function suggestEntry(m, sc) {
     { key: "over_25_ft", label: "Over 2.5 Gols", still: goals < 3, need: 3, minXg: 2.10 },
   ];
   for (const c of goalCands) {
-    if (htGoalPushed) break; // já entrou no 1º tempo → não entra no jogo inteiro
+    if (htGoalPushed && m.minute < 60) break;
     if (!c.still) continue;
-    if (lateGame) continue;
+    if (goalsBlocked) continue;
     const o = over[c.key];
     const fProb = o ? numOrNull(o.probability) : null;
     const fOdd = o ? numOrNull(o.market_odd) : null;
-    // sinal de xG: real ou estimado por momentum
     const xgSig = sc.xgAvail && sc.xgRising && sc.xgTotal >= c.minXg;
-    // Quando xG real não disponível, usa estimativa baseada em momentum + chutes
-    // Aceita xG estimado se: xG >= minimo E (momentumEntry >= 0.3 OU xG >= 1.5)
-    const useEstXG = !xgSig && sc.estXG != null && sc.estXG >= c.minXg && 
+    const useEstXG = !xgSig && sc.estXG != null && sc.estXG >= c.minXg &&
       (sc.momentumEntryScore >= 0.3 || sc.estXG >= 1.5) && sc.momAvail;
-    // Nova condição: xG subindo + chutes no alvo >= 3 + xG >= minimo
     const xgRisingWithShots = !xgSig && !useEstXG && sc.xgRising && sc.num.sot >= 3 && sc.xgTotal >= c.minXg;
-    const xgProb = xgSig ? Math.round(poissonProb(sc.xgTotal, c.need) * 100) 
-      : (useEstXG ? Math.round(poissonProb(sc.estXG, c.need) * 100) 
+    const xgProb = xgSig ? Math.round(poissonProb(sc.xgTotal, c.need) * 100)
+      : (useEstXG ? Math.round(poissonProb(sc.estXG, c.need) * 100)
       : (xgRisingWithShots ? Math.round(poissonProb(sc.xgTotal, c.need) * 100) : null));
-    if (fProb == null && !xgSig && !useEstXG && !xgRisingWithShots) continue;
-    if (fProb != null && fProb < 45 && !xgSig && !useEstXG && !xgRisingWithShots) continue;
+    const strongXgSignal = xgSig || useEstXG || xgRisingWithShots;
+    if (fProb == null && !strongXgSignal) continue;
+    if (fProb != null && fProb < 45 && !strongXgSignal) continue;
+    const xgTotalForGate = sc.xgAvail ? sc.xgTotal : (sc.estXG || 0);
+    if (xgTotalForGate >= 1.2 && !strongXgSignal) { /* ignora prob baixa se xG total alto */ }
+    else if (fProb != null && fProb < 45 && !strongXgSignal) continue;
     const prob = fProb != null ? fProb : xgProb;
     if (prob == null) continue;
     out.push({
@@ -881,55 +889,57 @@ function suggestEntry(m, sc) {
   }
 
    // escanteios: mercado aberto + pressão real do gráfico de cantos
-   // (force vs threshold, minutos acima do limiar, xc-momentum ou alerta da fonte).
-   // Também usa momentum sustentado como sinal de pressão
    const momCornersSignal = sc.momAvail && sc.momMag >= 20 && (sc.num.sot >= 5 || sc.num.dang >= 25);
    const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-   // sinal forte do gráfico de cantos dispensa o gate do componente de escanteios
    const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-   if (m.minute >= 55 && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong)) {
-     // enquanto houver uma entrada de escanteio ABERTA (sem green) no mesmo jogo, não envia outra
-     const openCorners = state.history.some(h =>
-       h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
-     if (!openCorners) {
-       let line = null;
-       if (cornersExp != null) {
-         line = Math.floor(cornersExp) + 1.5; // projeção + 1 escanteio a mais
-       } else if (sc.xcMom >= 0.4) {
-         line = sc.num.corners + 1.5; // pressão forte → atual + 1 escanteio extra
-       }
-       if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5; // nunca abaixo do atual + 1
-       // evita entrada absurda: confere quantos escanteios já saíram e se a linha é
-       // alcançável até o fim do jogo (ritmo forte sustentável ≈ 0,2 escanteio/min,
-       // entre 2 e 6 extras de uma vez) — ex.: aos 62' com 6 cantos, linha > 12,5 é inviável
-       if (line != null) {
-         const remaining = Math.max(90 - minute, 5);
-         const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
-         if (line > sc.num.corners + maxExtra) line = null; // inviável → não entra
-       }
-       // Onda de escanteios: 2+ escanteios do mesmo time em janela curta
-       const cornerWave = sc.num.corners >= 2 && sc.xcRising && sc.aboveMin >= 2;
-       if (line != null && cornerWave) {
-         line = Math.max(line, sc.num.corners + 2.5); // onda de escanteios → linha mais agressiva
-       }
-       if (line != null) {
-         out.push({
-           type: "corners",
-           label: `Mais escanteios — Over ${fmt(line, 1)}`,
-           odd: null, prob: null,
-           prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0) + (cornerWave ? 2 : 0),
-           source: sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart'),
-           cornerWave: cornerWave,
-         });
-       }
-     }
-   }
+   const cornerMinuteGate = m.minute >= 55 || (m.minute >= 35 && sc.xcRising && sc.aboveMin >= 2);
+   if (cornerMinuteGate && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong || (momCornersSignal && sc.xcRising)) && !almostEnded) {
+      const openCorners = state.history.some(h =>
+        h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
+      if (!openCorners) {
+        let line = null;
+        if (cornersExp != null) {
+          line = Math.floor(cornersExp) + 1.5;
+        } else if (sc.xcMom >= 0.4) {
+          line = sc.num.corners + 1.5;
+        }
+        if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5;
+        if (line != null) {
+          const remaining = Math.max(90 - minute, 5);
+          const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
+          if (line > sc.num.corners + maxExtra) line = null;
+        }
+        const cornerWave = sc.num.corners >= 2 && sc.xcRising && sc.aboveMin >= 2;
+        if (line != null && cornerWave) {
+          line = Math.max(line, sc.num.corners + 2.5);
+        }
+        if (line != null) {
+          const cappedLine = Math.min(line, Math.max(sc.num.corners + 1.5, cornersExp ?? line));
+          const cornerOdd = f.corners ? (numOrNull(f.corners.over_line?.market_odd) ?? numOrNull(f.corners.match_total?.market_odd)) : null;
+          const cornerProb = f.corners ? (numOrNull(f.corners.over_line?.probability) ?? numOrNull(f.corners.match_total?.probability)) : null;
+          const cornerEdge = cornerProb != null && cornerOdd != null ? (cornerProb - Math.round((1 / cornerOdd) * 100)) : null;
+          if (cornerEdge != null && cornerEdge < 5 && !cpStrong) {
+            // skip se edge menor que 5% e não for sinal forte
+          } else {
+            out.push({
+              type: "corners",
+              label: `Mais escanteios — Over ${fmt(cappedLine, 1)}`,
+              odd: cornerOdd,
+              prob: cornerProb,
+              edge: cornerEdge,
+              prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0) + (cornerWave ? 2 : 0) + (cpStrong ? 1 : 0),
+              source: sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart'),
+              cornerWave: cornerWave,
+            });
+          }
+        }
+      }
+    }
 
   // ---- BTTS (Both Teams To Score) ----
-  // Ambos os times com pressão ofensiva e 0-0 no placar
-  if (sc.bttsCandidate && m.minute >= 20 && !lateGame) {
+  if (sc.bttsCandidate && m.minute >= 20 && !goalsBlocked) {
     const bttsMarket = f.btts || null;
     const bttsProb = bttsMarket ? numOrNull(bttsMarket.probability) : null;
     const bttsOdd = bttsMarket ? numOrNull(bttsMarket.market_odd) : null;
@@ -945,8 +955,7 @@ function suggestEntry(m, sc) {
   }
 
   // ---- Próximo gol por time ----
-  // Usa superiority + momentum direction + dangerous attacks diff
-  if (!lateGame && sc.dir && sc.dirStrength >= 0.5 && sc.momAvail) {
+  if (!goalsBlocked && sc.dir && sc.dirStrength >= 0.5 && sc.momAvail) {
     const nextGoalTeam = sc.dir === "home" ? m.home : m.away;
     const nextGoalProb = Math.round(clamp(sc.dirStrength * 100, 30, 85));
     out.push({
@@ -961,8 +970,7 @@ function suggestEntry(m, sc) {
   }
 
   // ---- Correlação escanteio → gol (combo) ----
-  // Se tem pressão de escanteio E entrada de gols, sugerir combo
-  if (sc.num.corners >= 3 && sc.xcRising && sc.sustainedPressure && minute >= 50 && !lateGame) {
+  if (sc.num.corners >= 3 && sc.xcRising && sc.sustainedPressure && minute >= 50 && !goalsBlocked) {
     const hasCornerEntry = out.some(e => e.type === "corners");
     const hasGoalEntry = out.some(e => e.type === "goals");
     if (hasCornerEntry && hasGoalEntry) {
@@ -978,7 +986,7 @@ function suggestEntry(m, sc) {
   }
 
   // condição especial: jogo muito movimentado → entrada de gols por pressão de ataques
-  if (!out.length && !htGoalPushed && !lateGame) {
+  if (!out.length && !htGoalPushed && !goalsBlocked) {
     const hasGoalMarket = over.over_05_ft || over.over_15_ft || over.over_25_ft;
     if (hasGoalMarket && (sc.sustainedPressure || sc.veryHighPressure || sc.pressureRising)) {
       const pick = over.over_05_ft || over.over_15_ft || over.over_25_ft;
@@ -1008,11 +1016,10 @@ function suggestEntry(m, sc) {
     const impliedProb = Math.round((1 / primary.odd) * 100);
     const edge = primary.prob - impliedProb;
     const evPct = edge > 0 ? Math.round((edge / 100) * primary.odd * 100) : 0;
-    // Kelly Criterion: f* = (bp - q) / b, onde b = odd-1, p = prob, q = 1-p
     const b = (primary.odd || 1) - 1;
     const p = primary.prob / 100;
     const q = 1 - p;
-    const kelly = b > 0 && p > 0 ? clamp((b * p - q) / b, 0, 0.05) : 0; // cap em 5% da banca
+    const kelly = b > 0 && p > 0 ? clamp((b * p - q) / b, 0, 0.05) : 0;
     primary.valueEdge = edge;
     primary.evPct = evPct;
     primary.kellyPct = kelly > 0 ? Math.round(kelly * 100) : null;
@@ -1020,7 +1027,8 @@ function suggestEntry(m, sc) {
 
   const finalPrimary = primary;
   const finalStrong = finalPrimary && (sc.score >= 85) && (finalPrimary.type !== "goals" || finalPrimary.prob >= 70);
-  const entryStrength = finalStrong ? "forte" : (finalPrimary && sc.score >= 80 ? "interessante" : "automatica");
+  const hasValue = finalPrimary && (finalPrimary.kellyPct != null && finalPrimary.kellyPct >= 2) || (finalPrimary.valueEdge != null && finalPrimary.valueEdge >= 5);
+  const entryStrength = finalStrong && hasValue ? "forte" : (finalPrimary && sc.score >= 80 && hasValue ? "interessante" : "automatica");
   return { entries: out.slice(0, 3), primary: finalPrimary, strong: finalStrong, goals, cornersExp, entryStrength, valueBet: finalPrimary?.valueEdge || null };
 }
 
@@ -1338,10 +1346,10 @@ function dedupeHistory() {
 
 function ensureEntry(m, sc, sug) {
   if (!sug.primary) return;
-  // não duplica: se já existe uma entrada ABERTA (result == null) para o mesmo jogo+mercado, não cria outra
-  if (state.history.some(h => h.result == null && h.market === sug.primary.label && sameMatch(h, m))) return;
-  const hour = new Date().toISOString().slice(0, 13);
-  const exists = state.history.some(h => h.match === (m.home + " x " + m.away) && h.market === sug.primary.label && h.ts.slice(0, 13) === hour);
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  if (state.history.some(h => h.result == null && h.market === sug.primary.label && sameMatch(h, m) && (now - new Date(h.ts).getTime() < windowMs))) return;
+  const exists = state.history.some(h => h.match === (m.home + " x " + m.away) && h.market === sug.primary.label && (now - new Date(h.ts).getTime() < windowMs));
   if (exists) return;
   state.history.unshift({
     ts: new Date().toISOString(),
@@ -1352,9 +1360,9 @@ function ensureEntry(m, sc, sug) {
     odd: sug.primary.odd != null ? fmt(sug.primary.odd) : "N/D",
     prob: sug.primary.prob != null ? Math.round(sug.primary.prob) : null,
     score: sc.score,
-    detGoals: { h: m.scoreHome, a: m.scoreAway },   // placar no momento da detecção
+    detGoals: { h: m.scoreHome, a: m.scoreAway },
     result: null,
-    tgSent: false, // Telegram só é enviado quando a entrada é publicada nas ENTRADAS ATIVAS
+    tgSent: false,
   });
 }
 
