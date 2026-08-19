@@ -123,7 +123,7 @@
   .conf{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;margin-left:6px}
   .conf.high{background:rgba(34,197,94,.15);color:#4ade80}
   .conf.mid{background:rgba(245,158,11,.15);color:#fbbf24}
-  .strong{color:#4ade80} .interest{color:#fbbf24}
+  .strong{color:#4ade80} .interest{color:#fbbf24} .auto{color:#93c5fd}
   .why{font-size:12px;color:var(--muted);margin-top:8px}
   .why b{color:var(--text)}
   details{border:1px solid var(--line);border-radius:10px;background:var(--panel)}
@@ -237,7 +237,7 @@
     <details>
       <summary id="monitor-summary">Mostrar todos os jogos ao vivo monitorados</summary>
       <div class="tbl-wrap"><table id="monitor"><thead>
-        <tr><th>Jogo</th><th>Campeonato</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Esc</th><th>Chutes (alvo)</th><th>Ataq. perig.</th></tr>
+        <tr><th>Jogo</th><th>Campeonato</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Esc</th><th>Chutes (alvo)</th><th>Ataq. perig.</th><th>Pressão</th><th>Sinal</th></tr>
       </thead><tbody></tbody></table></div>
     </details>
   </section>
@@ -286,7 +286,7 @@
    ============================================================ */
 
 const API = "https://m.robobet.app/api";
-const BUILD = "2026-08-18T23:36-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
+const BUILD = "2026-08-19T00:30-03:00"; // versão publicada — atualize a cada push para identificar cache antigo
 const MIN_SCORE = 70;         // filtro mínimo (spec §8)
 const MIN_MINUTE = 20;        // antes disso os dados são finos demais para justificar entrada
 const MOM_WINDOW = 10;        // janela recente de momentum (minutos)
@@ -308,6 +308,7 @@ const state = {
   todayLoaded: false,
   finishedScores: {},         // id -> {h,a} placares finais (para resolver histórico)
   todayForecast: new Map(),   // id -> overlay de mercados/probabilidades do /events/today
+  teamPressureHistory: loadLS("rb_team_pressure", {}), // team -> {count, lastSeen}
 };
 
 function loadLS(k, dflt) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? dflt; } catch { return dflt; } }
@@ -317,6 +318,7 @@ function save() {
   const hist = state.history.slice(0, HISTORY_LIMIT);
   saveLS("rb_history", hist);
   saveLS("rb_history_bak", hist); // backup — recupera se o histórico principal sumir (ex.: storage limpo)
+  saveLS("rb_team_pressure", state.teamPressureHistory);
 }
 
 /* ---------------- helpers ---------------- */
@@ -654,6 +656,81 @@ function analyze(m) {
   res.sustainedPressure = sustainedPressure;
   res.veryHighPressure = veryHighPressure;
 
+  // ---- Onda de ataques (attack wave) ----
+  // 3+ ataques perigosos nos últimos ciclos = pressão iminente (MACY.AI / InplayRadar pattern)
+  const attackWave = dangRising && dang >= (isFirstHalf ? 12 : 20);
+  res.attackWave = attackWave;
+
+  // ---- Contexto de placar ----
+  const goalsTotal = (numOrNull(H.goals) ?? 0) + (numOrNull(A.goals) ?? 0);
+  const scoreDiff = (numOrNull(H.goals) ?? 0) - (numOrNull(A.goals) ?? 0);
+  const is0x0 = goalsTotal === 0;
+  const isTrailing = scoreDiff < 0;
+  const isWinning = scoreDiff > 0;
+  res.scoreContext = { is0x0, isTrailing, isWinning, goalsTotal, scoreDiff };
+
+  // ---- Cartão vermelho como multiplicador ----
+  // Vermelho aumenta probabilidade de gol do adversário em ~50% (estatística de futebol)
+  const redCardMultiplier = (m.redH || m.redA) ? 1.5 : 1.0;
+  res.redCardMultiplier = redCardMultiplier;
+
+  // ---- BTTS (Both Teams To Score) ----
+  const homeDang = numOrNull(H.dangerous_attacks) ?? 0;
+  const awayDang = numOrNull(A.dangerous_attacks) ?? 0;
+  const homeSot = numOrNull(H.on_target) ?? 0;
+  const awaySot = numOrNull(A.on_target) ?? 0;
+  const bttsCandidate = homeDang >= 5 && awayDang >= 5 && homeSot >= 2 && awaySot >= 2 && goalsTotal === 0;
+  res.bttsCandidate = bttsCandidate;
+
+  // ---- Calibração de probabilidade por tempo ----
+  // 1T: janela maior (1.2x), 2T: normal (1.0x), 75+: janela menor (0.75x)
+  const timeFactor = minute <= 45 ? 1.2 : (minute <= 75 ? 1.0 : 0.75);
+  res.timeFactor = timeFactor;
+
+  // ---- Histórico de pressão por time (padrão recorrente) ----
+  const teamKey = m.home + "|" + m.away;
+  const tpHist = state.teamPressureHistory[teamKey] || { count: 0, lastSeen: 0 };
+  if (sustainedPressure || veryHighPressure || attackWave) {
+    tpHist.count = (tpHist.count || 0) + 1;
+    tpHist.lastSeen = Date.now();
+  }
+  state.teamPressureHistory[teamKey] = tpHist;
+  res.recurringPattern = tpHist.count >= 2;
+  res.pressureHistoryCount = tpHist.count;
+
+  // ---- Onda de ataques (attack wave) ----
+  // 3+ ataques perigosos nos últimos ciclos = pressão iminente
+  const attackWave = dangRising && dang >= (isFirstHalf ? 12 : 20);
+  res.attackWave = attackWave;
+
+  // ---- Contexto de placar ----
+  const goalsTotal = (numOrNull(H.goals) ?? 0) + (numOrNull(A.goals) ?? 0);
+  const scoreDiff = (numOrNull(H.goals) ?? 0) - (numOrNull(A.goals) ?? 0);
+  const is0x0 = goalsTotal === 0;
+  const isTrailing = scoreDiff < 0;
+  const isWinning = scoreDiff > 0;
+  res.scoreContext = { is0x0, isTrailing, isWinning, goalsTotal, scoreDiff };
+
+  // ---- Cartão vermelho como multiplicador ----
+  const redCardMultiplier = (m.redH || m.redA) ? 1.5 : 1.0;
+  res.redCardMultiplier = redCardMultiplier;
+
+  // ---- BTTS (Both Teams To Score) ----
+  const homeDang = numOrNull(H.dangerous_attacks) ?? 0;
+  const awayDang = numOrNull(A.dangerous_attacks) ?? 0;
+  const homeSot = numOrNull(H.on_target) ?? 0;
+  const awaySot = numOrNull(A.on_target) ?? 0;
+  const bttsCandidate = homeDang >= 5 && awayDang >= 5 && homeSot >= 2 && awaySot >= 2 && goalsTotal === 0;
+  res.bttsCandidate = bttsCandidate;
+
+  // ---- Calibração de probabilidade por tempo ----
+  // 1T: janela maior, 2T: janela média, 75+: janela menor
+  const timeFactor = minute <= 45 ? 1.2 : (minute <= 75 ? 1.0 : 0.75);
+  res.timeFactor = timeFactor;
+
+  // ---- Detecção de valor (value betting) ----
+  res.valueBet = null;
+
   /* ---- reequilíbrio quando algum indicador não está disponível ---- */
   const parts = [
     { key: "xg", w: 30, v: xgScore, avail: xgAvail, label: "xG" },
@@ -837,53 +914,105 @@ function suggestEntry(m, sc) {
     });
   }
 
-  // escanteios: mercado aberto + pressão real do gráfico de cantos
-  // (force vs threshold, minutos acima do limiar, xc-momentum ou alerta da fonte).
-  // Também usa momentum sustentado como sinal de pressão
-  const momCornersSignal = sc.momAvail && sc.momMag >= 20 && (sc.num.sot >= 5 || sc.num.dang >= 25);
-  const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal ||
-    (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-  // sinal forte do gráfico de cantos dispensa o gate do componente de escanteios
-  const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal ||
-    (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-  if (m.minute >= 55 && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong)) {
-    // enquanto houver uma entrada de escanteio ABERTA (sem green) no mesmo jogo, não envia outra
-    const openCorners = state.history.some(h =>
-      h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
-    if (!openCorners) {
-      let line = null;
-      if (cornersExp != null) {
-        line = Math.floor(cornersExp) + 1.5; // projeção + 1 escanteio a mais
-      } else if (sc.xcMom >= 0.4) {
-        line = sc.num.corners + 1.5; // pressão forte → atual + 1 escanteio extra
-      }
-      if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5; // nunca abaixo do atual + 1
-      // evita entrada absurda: confere quantos escanteios já saíram e se a linha é
-      // alcançável até o fim do jogo (ritmo forte sustentável ≈ 0,2 escanteio/min,
-      // entre 2 e 6 extras de uma vez) — ex.: aos 62' com 6 cantos, linha > 12,5 é inviável
-      if (line != null) {
-        const remaining = Math.max(90 - minute, 5);
-        const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
-        if (line > sc.num.corners + maxExtra) line = null; // inviável → não entra
-      }
-      if (line != null) {
-        out.push({
-          type: "corners",
-          label: `Mais escanteios — Over ${fmt(line, 1)}`,
-          odd: null, prob: null,
-          prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0),
-          source: sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart'),
-        });
-      }
+   // escanteios: mercado aberto + pressão real do gráfico de cantos
+   // (force vs threshold, minutos acima do limiar, xc-momentum ou alerta da fonte).
+   // Também usa momentum sustentado como sinal de pressão
+   const momCornersSignal = sc.momAvail && sc.momMag >= 20 && (sc.num.sot >= 5 || sc.num.dang >= 25);
+   const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal ||
+     (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
+   // sinal forte do gráfico de cantos dispensa o gate do componente de escanteios
+   const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal ||
+     (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
+   if (m.minute >= 55 && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong)) {
+     // enquanto houver uma entrada de escanteio ABERTA (sem green) no mesmo jogo, não envia outra
+     const openCorners = state.history.some(h =>
+       h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
+     if (!openCorners) {
+       let line = null;
+       if (cornersExp != null) {
+         line = Math.floor(cornersExp) + 1.5; // projeção + 1 escanteio a mais
+       } else if (sc.xcMom >= 0.4) {
+         line = sc.num.corners + 1.5; // pressão forte → atual + 1 escanteio extra
+       }
+       if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5; // nunca abaixo do atual + 1
+       // evita entrada absurda: confere quantos escanteios já saíram e se a linha é
+       // alcançável até o fim do jogo (ritmo forte sustentável ≈ 0,2 escanteio/min,
+       // entre 2 e 6 extras de uma vez) — ex.: aos 62' com 6 cantos, linha > 12,5 é inviável
+       if (line != null) {
+         const remaining = Math.max(90 - minute, 5);
+         const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
+         if (line > sc.num.corners + maxExtra) line = null; // inviável → não entra
+       }
+       // Onda de escanteios: 2+ escanteios do mesmo time em janela curta
+       const cornerWave = sc.num.corners >= 2 && sc.xcRising && sc.aboveMin >= 2;
+       if (line != null && cornerWave) {
+         line = Math.max(line, sc.num.corners + 2.5); // onda de escanteios → linha mais agressiva
+       }
+       if (line != null) {
+         out.push({
+           type: "corners",
+           label: `Mais escanteios — Over ${fmt(line, 1)}`,
+           odd: null, prob: null,
+           prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0) + (cornerWave ? 2 : 0),
+           source: sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart'),
+           cornerWave: cornerWave,
+         });
+       }
+     }
+   }
+
+  // ---- BTTS (Both Teams To Score) ----
+  // Ambos os times com pressão ofensiva e 0-0 no placar
+  if (sc.bttsCandidate && m.minute >= 20 && !lateGame) {
+    const bttsMarket = f.btts || null;
+    const bttsProb = bttsMarket ? numOrNull(bttsMarket.probability) : null;
+    const bttsOdd = bttsMarket ? numOrNull(bttsMarket.market_odd) : null;
+    const prob = bttsProb || Math.round(poissonProb((sc.xgTotal || sc.estXG || 1.5), 2) * 100);
+    out.push({
+      type: "btts",
+      label: "Ambos marcam",
+      odd: bttsOdd,
+      prob: Math.round(prob),
+      prio: 3 + (bttsProb != null ? 1 : 0) + (sc.bttsCandidate && sc.momAvail && sc.momMag >= 14 ? 1 : 0),
+      source: "btts-pressure",
+    });
+  }
+
+  // ---- Próximo gol por time ----
+  // Usa superiority + momentum direction + dangerous attacks diff
+  if (!lateGame && sc.dir && sc.dirStrength >= 0.5 && sc.momAvail) {
+    const nextGoalTeam = sc.dir === "home" ? m.home : m.away;
+    const nextGoalProb = Math.round(clamp(sc.dirStrength * 100, 30, 85));
+    out.push({
+      type: "next-goal",
+      label: `Próximo gol — ${nextGoalTeam}`,
+      odd: null,
+      prob: nextGoalProb,
+      prio: 2 + (sc.dirStrength >= 0.65 ? 1 : 0) + (sc.redCardMultiplier > 1 ? 1 : 0),
+      source: "superiority-momentum",
+      team: nextGoalTeam,
+    });
+  }
+
+  // ---- Correlação escanteio → gol (combo) ----
+  // Se tem pressão de escanteio E entrada de gols, sugerir combo
+  if (sc.num.corners >= 3 && sc.xcRising && sc.sustainedPressure && minute >= 50 && !lateGame) {
+    const hasCornerEntry = out.some(e => e.type === "corners");
+    const hasGoalEntry = out.some(e => e.type === "goals");
+    if (hasCornerEntry && hasGoalEntry) {
+      out.push({
+        type: "combo",
+        label: `Combo: Mais escanteios + Over 0.5 Gol`,
+        odd: null,
+        prob: Math.round(Math.min((out.find(e => e.type === "goals")?.prob || 50) * 0.9, 85)),
+        prio: 4,
+        source: "corner-goal-correlation",
+      });
     }
   }
 
-  out.sort((a, b) => b.prio - a.prio);
-  const primary = out[0] || null;
-  const strong = primary && (sc.score >= 85) && (primary.type !== "goals" || primary.prob >= 70);
-
   // condição especial: jogo muito movimentado → entrada de gols por pressão de ataques
-  if (!primary && !htGoalPushed && !lateGame) {
+  if (!out.length && !htGoalPushed && !lateGame) {
     const hasGoalMarket = over.over_05_ft || over.over_15_ft || over.over_25_ft;
     if (hasGoalMarket && (sc.sustainedPressure || sc.veryHighPressure || sc.pressureRising)) {
       const pick = over.over_05_ft || over.over_15_ft || over.over_25_ft;
@@ -905,9 +1034,28 @@ function suggestEntry(m, sc) {
     }
   }
 
-  const finalPrimary = out[0] || null;
+  out.sort((a, b) => b.prio - a.prio);
+  const primary = out[0] || null;
+
+  // ---- Value Betting: comparar prob do modelo vs prob implícita da odd ----
+  if (primary && primary.odd != null && primary.prob != null) {
+    const impliedProb = Math.round((1 / primary.odd) * 100);
+    const edge = primary.prob - impliedProb;
+    const evPct = edge > 0 ? Math.round((edge / 100) * primary.odd * 100) : 0;
+    // Kelly Criterion: f* = (bp - q) / b, onde b = odd-1, p = prob, q = 1-p
+    const b = (primary.odd || 1) - 1;
+    const p = primary.prob / 100;
+    const q = 1 - p;
+    const kelly = b > 0 && p > 0 ? clamp((b * p - q) / b, 0, 0.05) : 0; // cap em 5% da banca
+    primary.valueEdge = edge;
+    primary.evPct = evPct;
+    primary.kellyPct = kelly > 0 ? Math.round(kelly * 100) : null;
+  }
+
+  const finalPrimary = primary;
   const finalStrong = finalPrimary && (sc.score >= 85) && (finalPrimary.type !== "goals" || finalPrimary.prob >= 70);
-  return { entries: out.slice(0, 3), primary: finalPrimary, strong: finalStrong, goals, cornersExp };
+  const entryStrength = finalStrong ? "forte" : (finalPrimary && sc.score >= 80 ? "interessante" : "automatica");
+  return { entries: out.slice(0, 3), primary: finalPrimary, strong: finalStrong, goals, cornersExp, entryStrength, valueBet: finalPrimary?.valueEdge || null };
 }
 
 function buildReason(m, sc, sug) {
@@ -924,11 +1072,20 @@ function buildReason(m, sc, sug) {
   if (sc.veryHighPressure) bits.push("pressão muito alta");
   else if (sc.sustainedPressure) bits.push("pressão sustentada");
   else if (sc.pressureRising) bits.push("pressão subindo");
+  if (sc.attackWave) bits.push("onda de ataques");
+  if (sc.scoreContext) {
+    if (sc.scoreContext.is0x0) bits.push("0-0");
+    else if (sc.scoreContext.isTrailing) bits.push("time perdendo");
+    else if (sc.scoreContext.isWinning) bits.push("time vencendo");
+  }
+  if (sc.bttsCandidate) bits.push("BTTS possível");
+  if (sc.recurringPattern) bits.push("padrão recorrente");
   if (sc.fire || sc.ball || sc.combo) bits.push(sc.fire && sc.ball ? "Fire+Ball ativos" : (sc.fire ? "Fire ativo" : (sc.ball ? "Ball ativo" : "Combo ativo")));
   if (m.redH || m.redA) bits.push("cartão vermelho");
   if (sug.cornersExp != null) bits.push(`escanteios esperados ${fmt(sug.cornersExp, 1)}`);
   if (sc.momentumEntryScore != null && sc.momentumEntryScore >= 0.5) bits.push(`momentum entry: ${Math.round(sc.momentumEntryScore * 100)}%`);
-  return bits.slice(0, 5).join(" + ") + ".";
+  if (sug.entryStrength) bits.push(`força: ${sug.entryStrength}`);
+  return bits.slice(0, 6).join(" + ") + ".";
 }
 
 /* ---------------- Telegram ---------------- */
@@ -1102,6 +1259,41 @@ function maybeAlerts() {
         });
       }
     }
+    // Alerta de onda de ataques (attack wave) - 3+ ataques perigosos em janela curta
+    if (sc.attackWave && m.minute >= 10 && !lateGame) {
+      const sug = m._sug;
+      const hasGoalEntry = sug && sug.entries && sug.entries.some(e => e.type === 'goals');
+      const dup = state.alerts.some(a => a.t === "detected" && a.title.includes(m.home) && a.title.includes('ONDA') && Math.abs(a.at - now) < 5 * 60_000);
+      if (!dup && hasGoalEntry) {
+        state.alerts.unshift({
+          t: "detected", at: now,
+          title: `🌊 ONDA DE ATAQUES — ${m.home} x ${m.away}`,
+          body: `${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway} · ${pl(sc.num.dang, "ataque perigoso", "ataques perigosos")} (↑) → 🟢 Entrada de gols · Score ${sc.score}/100`,
+        });
+      }
+    }
+    // Alerta de BTTS (Both Teams To Score)
+    if (sc.bttsCandidate && m.minute >= 20 && !lateGame) {
+      const dup = state.alerts.some(a => a.t === "detected" && a.title.includes(m.home) && a.title.includes('BTTS') && Math.abs(a.at - now) < 5 * 60_000);
+      if (!dup) {
+        state.alerts.unshift({
+          t: "detected", at: now,
+          title: `🎯 BTTS — ${m.home} x ${m.away}`,
+          body: `${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway} · Ambos os times com pressão ofensiva (0-0) → Ambos marcam · Score ${sc.score}/100`,
+        });
+      }
+    }
+    // Alerta de padrão recorrente (time que já teve pressão antes)
+    if (sc.recurringPattern && m.minute >= 15 && !lateGame) {
+      const dup = state.alerts.some(a => a.t === "detected" && a.title.includes(m.home) && a.title.includes('RECORRENTE') && Math.abs(a.at - now) < 10 * 60_000);
+      if (!dup) {
+        state.alerts.unshift({
+          t: "detected", at: now,
+          title: `🔄 PADRÃO RECORRENTE — ${m.home} x ${m.away}`,
+          body: `${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway} · Este jogo já apresentou pressão alta ${sc.pressureHistoryCount}x anteriormente → Confiança maior · Score ${sc.score}/100`,
+        });
+      }
+    }
     // Alerta de xG subindo + chutes (gera entrada)
     if (sc.xgRising && sc.num.sot >= 3 && m.minute >= 10 && !lateGame) {
       const sug = m._sug;
@@ -1246,6 +1438,16 @@ function resolveHistoryEntryInner(h, finals, names) {
     h.result = scoredAfter ? "green" : "red";
     return;
   }
+  if (h.market.startsWith("Ambos marcam")) {
+    h.result = (finals.h > 0 && finals.a > 0) ? "green" : "red";
+    return;
+  }
+  if (h.market.startsWith("Combo:")) {
+    const goalsMet = total >= 1;
+    const cornersMet = finals.cornersH != null && finals.cornersA != null && (finals.cornersH + finals.cornersA) >= 8;
+    h.result = (goalsMet && cornersMet) ? "green" : "red";
+    return;
+  }
   h.result = "na";
 }
 
@@ -1313,6 +1515,8 @@ function resolveWonLive(m) {
     else if (h.market.startsWith("Over 0.5")) won = total >= 1;
     else if (h.market.startsWith("Over 1.5")) won = total >= 2;
     else if (h.market.startsWith("Over 2.5")) won = total >= 3;
+    else if (h.market.startsWith("Ambos marcam")) won = (m.scoreHome > 0 && m.scoreAway > 0);
+    else if (h.market.startsWith("Combo:")) won = (total >= 1 && sc && sc.num.corners >= 8);
     else {
       const cm = h.market.match(/Mais escanteios[^—]*— Over (\d+(?:\.\d+)?)/);
       if (cm) won = !!sc && sc.num.corners >= Number(cm[1]);
@@ -1524,20 +1728,30 @@ function renderRanking(opps) {
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table><thead><tr>
-    <th>#</th><th>Jogo</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Escanteios</th><th>Entrada</th>
+    <th>#</th><th>Jogo</th><th>Min</th><th>Placar</th><th>Score</th><th>xG</th><th>Momentum</th><th>Esc</th><th>Entrada</th><th>Valor</th>
   </tr></thead><tbody>` + withEntry.map((m, i) => {
     const sc = m._sc, sug = m._sug;
     const pill = sc.score >= 80 ? "s80" : "s70";
+    const entryIcon = sug.primary.type === "corners" ? "🚩" : (sug.primary.type === "btts" ? "🎯" : (sug.primary.type === "next-goal" ? "⚡" : (sug.primary.type === "combo" ? "💥" : "⚽")));
+    const valueBadge = sug.valueBet != null && sug.valueBet > 0
+      ? `<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">+${sug.valueBet}% edge</span>`
+      : '';
+    const kellyBadge = sug.primary?.kellyPct != null
+      ? `<span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Kelly ${sug.primary.kellyPct}%</span>`
+      : '';
+    const strengthBadge = sug.entryStrength === "forte"
+      ? '<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">Forte</span>'
+      : (sug.entryStrength === "interessante" ? '<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">Interessante</span>' : '');
     return `<tr>
       <td>${i + 1}️⃣</td>
-      <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}</div></td>
+      <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}${sc?.recurringPattern ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Recorrente</span>' : ''}</div></td>
       <td>${esc(m.time || (m.minute + "'"))}</td>
       <td>${m.scoreHome} x ${m.scoreAway}</td>
       <td><span class="score-pill ${pill}">${sc.score}/100</span></td>
       <td>${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="lg">(est)</span>` : '<span class="nd">N/D</span>')}</td>
       <td>${momText(m, sc)}</td>
       <td>${sc.num.corners}</td>
-      <td><span class="entry-tag hl ${sug.primary.type === "corners" ? "alt" : ""}">🟢 ${esc(sug.primary.label)}</span></td>
+      <td><span class="entry-tag hl ${sug.primary.type === "corners" ? "alt" : ""}">${entryIcon} ${esc(sug.primary.label)}</span>${strengthBadge}${valueBadge}${kellyBadge}</td>
     </tr>`;
   }).join("") + "</tbody></table></div>";
 }
@@ -1608,7 +1822,8 @@ function renderActive() {
   let sentAny = false;
   for (const { h, m } of entries) {
     if (h.result != null || h.tgSent || !tg.enabled || !tg.fwdDetected) continue;
-    tgPush(`🟢 ENTRADA ABERTA\n⚽ ${m.home} x ${m.away} (${m.league})\n⏱ ${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway}\n🎯 ${h.market}\n💰 Odd: ${h.odd}${h.prob != null ? " · Prob. " + h.prob + "%" : ""}\n🔥 Score: ${(m._sc && m._sc.score) || h.score}/100`);
+    const entryWindow = calculateEntryWindow(h, m);
+    tgPush(`🟢 ENTRADA ABERTA\n⚽ ${m.home} x ${m.away} (${m.league})\n⏱ ${m.time || (m.minute + "'")} · ${m.scoreHome}x${m.scoreAway}\n🎯 ${h.market}\n💰 Odd: ${h.odd}${h.prob != null ? " · Prob. " + h.prob + "%" : ""}${entryWindow ? "\n⏳ Janela: " + entryWindow : ""}\n🔥 Score: ${(m._sc && m._sc.score) || h.score}/100`);
     h.tgSent = true;
     sentAny = true;
   }
@@ -1619,16 +1834,34 @@ function renderActive() {
     const status = h.result === "green"
       ? '<span class="hres green">🟢 GREEN</span>'
       : '<span class="hres open">em aberto</span>';
+    const entryWindow = open ? calculateEntryWindow(h, m) : null;
+    const entryIcon = h.market.includes("escanteios") ? "🚩" : (h.market.includes("Ambos") ? "🎯" : (h.market.includes("Próximo") ? "⚡" : (h.market.includes("Combo") ? "💥" : "⚽")));
     return `<tr${open ? ' class="open-row"' : ""}>
       <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}</div></td>
-      <td>${esc(m.time || (m.minute + "'"))}</td>
+      <td>${esc(m.time || (m.minute + "'"))}${entryWindow ? ` <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">⏳ ${entryWindow}</span>` : ''}</td>
       <td>${m.scoreHome} x ${m.scoreAway}</td>
-      <td>${open ? `<span class="entry-tag hl">${esc(h.market)}</span>` : esc(h.market)}</td>
-      <td>${esc(h.odd)}</td>
+      <td>${open ? `<span class="entry-tag hl">${entryIcon} ${esc(h.market)}</span>` : esc(h.market)}</td>
+      <td>${esc(h.odd)}${h.prob != null ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">${h.prob}%</span>` : ''}</td>
       <td>${(m._sc && m._sc.score) || h.score}/100</td>
       <td>${status}</td>
     </tr>`;
   }).join("");
+}
+
+// Calcula a janela de entrada (tempo restante estimado)
+function calculateEntryWindow(h, m) {
+  const minute = Math.max(m.minute, 1);
+  if (h.market.includes("escanteios")) {
+    const remaining = Math.max(90 - minute, 5);
+    return `~${remaining}min`;
+  }
+  if (h.market.includes("Ambos") || h.market.includes("Over")) {
+    if (minute <= 45) return "~40min";
+    if (minute <= 75) return "~20min";
+    return "~10min";
+  }
+  if (h.market.includes("Próximo")) return "~15min";
+  return null;
 }
 
 function renderOpps85() {
@@ -1641,14 +1874,15 @@ function renderOpps85() {
   sec.style.display = "block";
   grid.innerHTML = opps.map(m => {
     const sc = m._sc, sug = m._sug;
+    const entryIcon = sug?.primary?.type === "corners" ? "🚩" : (sug?.primary?.type === "btts" ? "🎯" : (sug?.primary?.type === "next-goal" ? "⚡" : (sug?.primary?.type === "combo" ? "💥" : "⚽")));
     const entry = sug && sug.primary
-      ? `<span class="entry-tag hl">🟢 ${esc(sug.primary.label)}${sug.primary.odd != null ? " @ " + fmt(sug.primary.odd) : ""}</span>`
+      ? `<span class="entry-tag hl">${entryIcon} ${esc(sug.primary.label)}${sug.primary.odd != null ? " @ " + fmt(sug.primary.odd) : ""}${sug.valueBet != null && sug.valueBet > 0 ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">+${sug.valueBet}%</span>` : ''}${sug.primary?.kellyPct != null ? ` <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Kelly ${sug.primary.kellyPct}%</span>` : ''}</span>`
       : '<span class="nd">— monitorando —</span>';
     return `<table class="opp85"><tbody>
-      <tr class="h"><td colspan="2">🔥 ENTRADA FORTE <span class="pill">${sc.score}/100</span></td></tr>
-      <tr><td class="k">Jogo</td><td><b>${esc(m.home)} x ${esc(m.away)}</b><span class="lg">${esc(m.league)}</span></td></tr>
-      <tr><td class="k">⏱ Min</td><td>${esc(m.time || (m.minute + "'"))} · <b>${m.scoreHome} x ${m.scoreAway}</b></td></tr>
-      <tr><td class="k">📈 xG</td><td>${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="lg">(estimado)</span>${sc.estXgRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈 subindo</span>' : ''}` : '<span class="nd">N/D</span>')}</td></tr>
+      <tr class="h"><td colspan="2">🔥 ENTRADA FORTE <span class="pill">${sc.score}/100</span>${sug?.entryStrength === "forte" ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">Forte</span>' : (sug?.entryStrength === "interessante" ? ' <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">Interessante</span>' : '')}</td></tr>
+      <tr><td class="k">Jogo</td><td><b>${esc(m.home)} x ${esc(m.away)}</b><span class="lg">${esc(m.league)}${sc?.recurringPattern ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Recorrente</span>' : ''}${sc?.attackWave ? ' <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">🌊 Onda</span>' : ''}</span></td></tr>
+      <tr><td class="k">⏱ Min</td><td>${esc(m.time || (m.minute + "'"))} · <b>${m.scoreHome} x ${m.scoreAway}</b>${m.redH || m.redA ? ' <span class="badge">C. VERMELHO</span>' : ""}${sc?.redCardMultiplier > 1 ? ' <span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">x1.5</span>' : ''}</td></tr>
+      <tr><td class="k">📈 xG</td><td>${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) + (sc.xgRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">subindo</span>' : "") : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="lg">(estimado)</span>${sc.estXgRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈 subindo</span>' : ''}` : '<span class="nd">N/D</span>')}</td></tr>
       <tr><td class="k">⚡ Mom.</td><td>${momText(m, sc)}</td></tr>
       <tr><td class="k">🟢 Entrada</td><td>${entry}</td></tr>
     </tbody></table>`;
@@ -1673,30 +1907,33 @@ function renderCards(opps) {
     const activeH = !sug ? (state.history.find(h => !h.result && (h.id === m.id || h.match === m.home + ' x ' + m.away)) || null) : null;
     const score = sc ? sc.score : (activeH ? activeH.score : 0);
     const conf = score >= 85 ? `<span class="conf high">Confiança: Alta</span>` : `<span class="conf mid">Confiança: Média</span>`;
-    const strength = sug && sug.strong ? `<span class="strong">🟢 ENTRADA FORTE</span>` : `<span class="interest">🟡 ENTRADA INTERESSANTE</span>`;
+    const strengthLabel = sug?.entryStrength === "forte" ? "🟢 ENTRADA FORTE" : (sug?.entryStrength === "interessante" ? "🟡 ENTRADA INTERESSANTE" : "🔵 ENTRADA AUTOMÁTICA");
+    const strengthClass = sug?.entryStrength === "forte" ? "strong" : (sug?.entryStrength === "interessante" ? "interest" : "auto");
     const alts = sug ? sug.entries.slice(1) : [];
     const c = sc ? sc.components : null;
+    const recurringBadge = sc?.recurringPattern ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Padrão recorrente</span>' : '';
+    const attackWaveBadge = sc?.attackWave ? ' <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">🌊 Onda de ataques</span>' : '';
     return `<div class="card">
       <div class="top"><div>
-        <div class="leag">${esc(m.league)}</div>
-        <div class="vs">${esc(m.home)} x ${esc(m.away)}</div>
+        <div class="leag">${esc(m.league)}${recurringBadge}</div>
+        <div class="vs">${esc(m.home)} x ${esc(m.away)}${attackWaveBadge}</div>
       </div><span class="score-pill ${sc.score >= 80 ? "s80" : "s70"}">${sc.score}/100</span></div>
-      <div class="meta">⏱ ${esc(m.time || (m.minute + "'"))}${(() => { const inj = estimateInjuryTime(m); if (!inj) return ''; const tag = inj.official ? '✅ +' + inj.min : '⏱ +' + inj.min + ' (est.)'; const bg = inj.official ? 'rgba(34,197,94,.15)' : 'rgba(251,191,36,.15)'; const col = inj.official ? '#4ade80' : '#fbbf24'; const bdr = inj.official ? 'rgba(34,197,94,.35)' : 'rgba(251,191,36,.35)'; return ' <span class="badge" style="background:' + bg + ';color:' + col + ';border-color:' + bdr + '">' + tag + '</span>'; })()} · Placar: <b>${m.scoreHome} x ${m.scoreAway}</b>${m.redH || m.redA ? ' <span class="badge">C. VERMELHO</span>' : ""}</div>
+      <div class="meta">⏱ ${esc(m.time || (m.minute + "'"))}${(() => { const inj = estimateInjuryTime(m); if (!inj) return ''; const tag = inj.official ? '✅ +' + inj.min : '⏱ +' + inj.min + ' (est.)'; const bg = inj.official ? 'rgba(34,197,94,.15)' : 'rgba(251,191,36,.15)'; const col = inj.official ? '#4ade80' : '#fbbf24'; const bdr = inj.official ? 'rgba(34,197,94,.35)' : 'rgba(251,191,36,.35)'; return ' <span class="badge" style="background:' + bg + ';color:' + col + ';border-color:' + bdr + '">' + tag + '</span>'; })()} · Placar: <b>${m.scoreHome} x ${m.scoreAway}</b>${m.redH || m.redA ? ' <span class="badge">C. VERMELHO</span>' : ""}${sc?.redCardMultiplier > 1 ? ' <span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">x1.5 prob</span>' : ''}</div>
       <div class="stats">
         ${sc ? `<div class="row"><span class="k">📈 xG</span><span class="v">${sc.xgAvail ? fmt(sc.num.xgH) + " x " + fmt(sc.num.xgA) + (sc.xgRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">subindo</span>' : "") : (sc.estXG != null ? `~${fmt(sc.estXG)} <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">estimado</span>${sc.estXgRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈 subindo</span>' : ''}` : '<span class="nd">N/D</span>')}</span></div>
         <div class="row"><span class="k">⚡ Momentum</span><span class="v">${momText(m, sc)}${sc.momentumEntryScore != null && sc.momentumEntryScore >= 0.4 ? ` <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">entry ${Math.round(sc.momentumEntryScore * 100)}%</span>` : ''}</span></div>
         <div class="row"><span class="k">🚩 Escanteios</span><span class="v">${sc.num.corners}${m.hasCornersMarket ? ' <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">MKT ABERTO</span>' : ""}</span></div>
         <div class="row"><span class="k">🎯 Chutes no alvo</span><span class="v">${sc.num.sot} / ${sc.num.shots}${sc.sotRising || sc.shotsRising ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈 subindo</span>` : ''}</span></div>
-        <div class="row"><span class="k">💥 Ataq. perigosos</span><span class="v">${sc.num.dang || '<span class="nd">N/D</span>'}</span></div>
+        <div class="row"><span class="k">💥 Ataq. perigosos</span><span class="v">${sc.num.dang || '<span class="nd">N/D</span>'}${sc.dangRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈</span>' : ''}</span></div>
         <div class="row"><span class="k">🧭 Posse</span><span class="v">${sc.num.possH != null ? sc.num.possH + "% x " + (100 - sc.num.possH) + "%" : '<span class="nd">N/D</span>'}</span></div>
-        <div class="row"><span class="k">⚽ Indicador da fonte</span><span class="v">${[sc.fire && "Fire", sc.ball && "Ball", sc.combo && "Combo", sc.cornersAlert && "Esc. alerta", sc.goalAlert && "Goal alert"].filter(Boolean).join(" · ") || '<span class="nd">—</span>'}</span></div>` : '<div style="padding:8px;color:var(--dim)">📊 Dados detalhados indisponíveis neste momento</div>'}
+        <div class="row"><span class="k">⚽ Indicador da fonte</span><span class="v">${[sc.fire && "Fire", sc.ball && "Ball", sc.combo && "Combo", sc.cornersAlert && "Esc. alerta", sc.goalAlert && "Goal alert", sc.attackWave && "Onda de ataques"].filter(Boolean).join(" · ") || '<span class="nd">—</span>'}</span></div>` : '<div style="padding:8px;color:var(--dim)">📊 Dados detalhados indisponíveis neste momento</div>'}
       </div>
       ${sc ? sparkline(m) : ''}
       ${sug && !sug.primary ? `<div class="entry"><div class="lab">Possível entrada</div><div class="mk"><span class="interest">Nenhum mercado com linha/odd favorável agora — monitorando.</span></div></div>` : ""}
       ${sug && sug.primary ? `<div class="entry has">
-        <div class="lab">Possível entrada · ${strength}</div>
-        <div class="mk">🟢 ${esc(sug.primary.label)}</div>
-        <div class="odds">Odd atual: <b>${sug.primary.odd != null ? fmt(sug.primary.odd) : "N/D"}</b>${sug.primary.prob != null ? ` · Prob. do modelo: <b>${Math.round(sug.primary.prob)}%</b>` : ""} ${conf}</div>
+        <div class="lab">Possível entrada · <span class="${strengthClass}">${strengthLabel}</span></div>
+        <div class="mk">🟢 ${esc(sug.primary.label)}${sug.primary.source === 'very-high-pressure' ? ' <span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">pressão alta</span>' : (sug.primary.source === 'sustained-pressure' ? ' <span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">pressão sustentada</span>' : (sug.primary.source === 'pressure-rising' ? ' <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">pressão subindo</span>' : ''))}</span></div>
+        <div class="odds">Odd atual: <b>${sug.primary.odd != null ? fmt(sug.primary.odd) : "N/D"}</b>${sug.primary.prob != null ? ` · Prob. do modelo: <b>${Math.round(sug.primary.prob)}%</b>` : ""} ${sug.valueBet != null ? `· <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">Edge: +${sug.valueBet}%</span>` : ''}${sug.primary.kellyPct != null ? ` · <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Kelly: ${sug.primary.kellyPct}%</span>` : ''} ${conf}</div>
         ${alts.length ? `<div class="odds" style="margin-top:3px">Alternativas: ${alts.map(a => esc(a.label)).join(" · ")}</div>` : ""}
       </div>` : ""}
       ${activeH ? `<div class="entry has">
@@ -1716,8 +1953,14 @@ function renderMonitor(matches) {
   $("monitor-summary").textContent = `Mostrar todos os jogos ao vivo monitorados (${sorted.length})`;
   tb.innerHTML = sorted.map(m => {
     const sc = m._sc;
-    if (!sc) return `<tr><td colspan="10"><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)} · ${esc(m.time || (m.minute + "'"))} · ${m.scoreHome} x ${m.scoreAway} — dados insuficientes (live-stats indisponível)</div></td></tr>`;
+    if (!sc) return `<tr><td colspan="12"><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)} · ${esc(m.time || (m.minute + "'"))} · ${m.scoreHome} x ${m.scoreAway} — dados insuficientes (live-stats indisponível)</div></td></tr>`;
     const pill = sc.score >= 80 ? "s80" : sc.score >= 70 ? "s70" : "";
+    const pressureTag = sc.veryHighPressure ? '<span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">Alta</span>' : (sc.sustainedPressure ? '<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">Sustentada</span>' : (sc.pressureRising ? '<span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">Subindo</span>' : ''));
+    const signalTags = [];
+    if (sc.attackWave) signalTags.push('<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.35)">🌊 Onda</span>');
+    if (sc.bttsCandidate) signalTags.push('<span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">🎯 BTTS</span>');
+    if (sc.recurringPattern) signalTags.push('<span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">🔄 Recorrente</span>');
+    if (sc.redCardMultiplier > 1) signalTags.push('<span class="badge" style="background:rgba(239,68,68,.15);color:#f87171;border-color:rgba(239,68,68,.35)">x1.5</span>');
     return `<tr>
       <td><div class="teams">${esc(m.home)} x ${esc(m.away)}</div><div class="lg">${esc(m.league)}</div></td>
       <td>${esc(m.league)}</td>
@@ -1729,6 +1972,8 @@ function renderMonitor(matches) {
       <td>${sc.num.corners}</td>
       <td>${sc.num.shots} (${sc.num.sot})</td>
       <td>${sc.num.dang || '<span class="nd">N/D</span>'}</td>
+      <td>${pressureTag}</td>
+      <td>${signalTags.join(' ') || '<span class="nd">—</span>'}</td>
     </tr>`;
   }).join("");
 }
