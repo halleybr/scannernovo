@@ -290,7 +290,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T19:12-03:00";
+const BUILD = "2026-08-19T19:18-03:00";
 const MIN_SCORE = 70;
 const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
 const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
@@ -1695,8 +1695,11 @@ function renderAll() {
       m._sug = m._sc.valid ? suggestEntry(m, m._sc) : null;
       m._reason = m._sug ? buildReason(m, m._sc, m._sug) : null;
       // entradas após maturidade mínima; no intervalo (HT) só se um time estiver
-      // pressionando muito (muitos ataques perigosos + chutes ao gol e fora)
-      const htPressing = m.period !== "HT" || m._sc.sustainedPressure || m._sc.veryHighPressure;
+      // pressionando: xG subindo + ataques perigosos/min alto + chutes ao gol (no alvo)
+      const min = Math.max(m.minute, 1);
+      const dangPerMin = m._sc.num.dang / min;
+      const xgUp = m._sc.xgRising || m._sc.estXgRising;
+      const htPressing = m.period !== "HT" || (xgUp && dangPerMin >= 0.33 && m._sc.num.sot >= 4);
       if (m._sug && m.minute >= MIN_MINUTE && htPressing) ensureEntry(m, m._sc, m._sug);
     } else { m._sc = null; m._sug = null; }
     resolveWonLive(m);
