@@ -286,7 +286,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T10:33-03:00";
+const BUILD = "2026-08-19T11:15-03:00";
 const MIN_SCORE = 70;
 const MIN_MINUTE = 12;
 const MOM_WINDOW = 10;
@@ -331,6 +331,26 @@ const fmt = (x, d = 2) => (x == null ? "N/D" : Number(x).toFixed(d));
 function numOrNull(v) { return (typeof v === "number" && isFinite(v)) ? v : (typeof v === "string" && v !== "" && isFinite(+v) ? +v : null); }
 function mean(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
 const pl = (n, s, p) => n + " " + (n === 1 ? s : (p || s + "s"));
+
+/* EMA e MACD sobre uma série qualquer (úteis p/ detectar aceleração de pressão).
+   O RoboBet não expõe "MACD xG" nem "análise IA" por API; derivamos o MACD da
+   própria série de pressão por minuto (momentum.timeline) — o sinal de ataque da
+   RoboBet — para cada time, e usamos o histograma p/ ver pressão subindo (gols/esc). */
+function emaArr(vals, period) {
+  if (!vals || !vals.length) return [];
+  const k = 2 / (period + 1);
+  let prev = vals[0];
+  if (vals.length >= period) { let s = 0; for (let i = 0; i < period; i++) s += vals[i]; prev = s / period; }
+  const out = new Array(vals.length); out[0] = prev;
+  for (let i = 1; i < vals.length; i++) { prev = vals[i] * k + prev * (1 - k); out[i] = prev; }
+  return out;
+}
+function macdSeries(vals, fast = 12, slow = 26, sig = 9) {
+  const ef = emaArr(vals, fast), es = emaArr(vals, slow);
+  const macd = vals.map((_, i) => ef[i] - es[i]);
+  const signal = emaArr(macd, sig);
+  return { macd, signal, hist: macd.map((v, i) => v - signal[i]) };
+}
 
 
 
@@ -605,6 +625,31 @@ function analyze(m) {
   res.momMag = round1(momMag);
   res.momTrend = ind.momentum_trend || null;
 
+  /* ---- MACD xG (aceleração de pressão por time) ----
+     Série por minuto = pressão de ataque do time (p1_home/p2_home e p1_away/p2_away
+     do momentum.timeline). MACD = EMA12 - EMA26; histograma = MACD - signal(EMA9).
+     Histograma positivo e subindo = o time está acelerando a pressão (criando
+     chances de gol e escanteios). Sem a série (jogo muito no início) → N/D. */
+  let macdHome = null, macdAway = null, macdHistHome = null, macdHistAway = null;
+  let macdPressTeam = null, macdRising = false;
+  if (ls.momentum && Array.isArray(ls.momentum.timeline) && ls.momentum.timeline.length >= 12) {
+    const tl = ls.momentum.timeline;
+    const homeSer = tl.map(p => (numOrNull(p.minute) != null && p.minute > 45) ? (numOrNull(p.p2_home) ?? 0) : (numOrNull(p.p1_home) ?? 0));
+    const awaySer = tl.map(p => (numOrNull(p.minute) != null && p.minute > 45) ? (numOrNull(p.p2_away) ?? 0) : (numOrNull(p.p1_away) ?? 0));
+    const mh = macdSeries(homeSer), ma = macdSeries(awaySer);
+    const L = mh.hist.length - 1;
+    macdHome = round2(mh.macd[L]); macdAway = round2(ma.macd[L]);
+    macdHistHome = round2(mh.hist[L]); macdHistAway = round2(ma.hist[L]);
+    const hH = macdHistHome ?? -Infinity, hA = macdHistAway ?? -Infinity;
+    if (Math.max(hH, hA) > 0) macdPressTeam = hH >= hA ? "home" : "away";
+    const rising = (s, h) => macdPressTeam === s && h > (mh.hist[L - 1] ?? mh.hist[L]);
+    macdRising = macdPressTeam === "home" ? rising("home", macdHistHome)
+      : macdPressTeam === "away" ? rising("away", macdHistAway) : false;
+  }
+  res.macdHome = macdHome; res.macdAway = macdAway;
+  res.macdHistHome = macdHistHome; res.macdHistAway = macdHistAway;
+  res.macdPressTeam = macdPressTeam; res.macdRising = macdRising;
+
   /* ---- Escanteios (20 pts) ---- */
   const cp = ls.corners_pressure;
   let force = 0, consistency = 0, xc = 0, cpDiff = null;
@@ -651,7 +696,8 @@ function analyze(m) {
   // thresholds separados por tempo (1T vs 2T) e por nível de pressão
   // Referência: bots de apostas ao vivo usam ~3-5 chutes no alvo no 1T e ~5-8 no 2T como sinal forte
   const isFirstHalf = minute <= 45;
-  const pressureRising = (shotsRising && sotRising && dangRising && dang >= (isFirstHalf ? 10 : 18));
+  const pressureRising = (shotsRising && sotRising && dangRising && dang >= (isFirstHalf ? 10 : 18))
+    || (macdRising && dang >= (isFirstHalf ? 8 : 14));
   const sustainedPressure = sot >= (isFirstHalf ? 3 : 5) && dang >= (isFirstHalf ? 10 : 18) && shots >= (isFirstHalf ? 6 : 10);
   const veryHighPressure = sot >= (isFirstHalf ? 5 : 8) && dang >= (isFirstHalf ? 18 : 30) && shots >= (isFirstHalf ? 10 : 16);
   res.pressureRising = pressureRising;
@@ -891,9 +937,12 @@ function suggestEntry(m, sc) {
 
    // escanteios: mercado aberto + pressão real do gráfico de cantos
    const momCornersSignal = sc.momAvail && sc.momMag >= 20 && (sc.num.sot >= 5 || sc.num.dang >= 25);
-   const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal ||
+   // MACD xG: o time que pressiona tem histograma positivo e subindo → escanteios a caminho
+   const macdCornerSignal = !!sc.macdPressTeam && sc.macdRising &&
+     ((sc.macdPressTeam === "home" ? sc.macdHistHome : sc.macdHistAway) > 0.5);
+   const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal || macdCornerSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-   const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal ||
+   const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal || macdCornerSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
    const cornerMinuteGate = m.minute >= 55 || (m.minute >= 35 && sc.xcRising && sc.aboveMin >= 2);
    if (cornerMinuteGate && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong || (momCornersSignal && sc.xcRising)) && !almostEnded) {
@@ -1054,6 +1103,7 @@ function buildReason(m, sc, sug) {
     else if (sc.scoreContext.isWinning) bits.push("time vencendo");
   }
   if (sc.bttsCandidate) bits.push("BTTS possível");
+  if (sc.macdPressTeam && sc.macdRising) bits.push(`MACD ${sc.macdPressTeam === "home" ? m.home : m.away} acelerando`);
   if (sc.recurringPattern) bits.push("padrão recorrente");
   if (sc.fire || sc.ball || sc.combo) bits.push(sc.fire && sc.ball ? "Fire+Ball ativos" : (sc.fire ? "Fire ativo" : (sc.ball ? "Ball ativo" : "Combo ativo")));
   if (m.redH || m.redA) bits.push("cartão vermelho");
@@ -1741,6 +1791,23 @@ function momText(m, sc) {
   return `${esc(team)} <span class="fire">${fire}</span>`;
 }
 
+/* Célula de MACD xG (linha MACD + histograma com seta). Verde = pressão subindo,
+   vermelho = caindo, cinza = neutro. Usado na tabela DETALHES DAS OPORTUNIDADES. */
+function macdCell(tm, val, hist) {
+  if (val == null) return `<span class="nd">${esc(tm)} N/D</span>`;
+  const a = hist == null ? "▬" : (hist > 0.3 ? "▲" : (hist < -0.3 ? "▼" : "▬"));
+  const c = hist == null ? "var(--dim)" : (hist > 0.3 ? "#4ade80" : (hist < -0.3 ? "#f87171" : "#94a3b8"));
+  return `<span style="color:${c}">${esc(tm)} ${round2(val)} ${a}</span>`;
+}
+function macdText(sc, m) {
+  const press = sc.macdPressTeam ? (sc.macdPressTeam === "home" ? m.home : m.away) : null;
+  const tag = (press && sc.macdRising)
+    ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">${esc(press)} pressionando</span>`
+    : "";
+  return macdCell(m.home, sc.macdHome, sc.macdHistHome) + " · " +
+    macdCell(m.away, sc.macdAway, sc.macdHistAway) + tag;
+}
+
 function sparkline(m) {
   const ls = m.liveStats;
   if (!ls || !ls.momentum || !Array.isArray(ls.momentum.moving_average) || ls.momentum.moving_average.length < 3) return "";
@@ -1900,6 +1967,7 @@ function renderCards(opps) {
         <div class="row"><span class="k">🚩 Escanteios</span><span class="v">${sc.num.corners}${m.hasCornersMarket ? ' <span class="badge" style="background:rgba(59,130,246,.15);color:#93c5fd;border-color:rgba(59,130,246,.35)">MKT ABERTO</span>' : ""}</span></div>
         <div class="row"><span class="k">🎯 Chutes no alvo</span><span class="v">${sc.num.sot} / ${sc.num.shots}${sc.sotRising || sc.shotsRising ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈 subindo</span>` : ''}</span></div>
         <div class="row"><span class="k">💥 Ataq. perigosos</span><span class="v">${sc.num.dang || '<span class="nd">N/D</span>'}${sc.dangRising ? ' <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">📈</span>' : ''}</span></div>
+        <div class="row"><span class="k">📊 MACD xG</span><span class="v">${macdText(sc, m)}</span></div>
         <div class="row"><span class="k">🧭 Posse</span><span class="v">${sc.num.possH != null ? sc.num.possH + "% x " + (100 - sc.num.possH) + "%" : '<span class="nd">N/D</span>'}</span></div>
         <div class="row"><span class="k">⚽ Indicador da fonte</span><span class="v">${[sc.fire && "Fire", sc.ball && "Ball", sc.combo && "Combo", sc.cornersAlert && "Esc. alerta", sc.goalAlert && "Goal alert", sc.attackWave && "Onda de ataques"].filter(Boolean).join(" · ") || '<span class="nd">—</span>'}</span></div>` : '<div style="padding:8px;color:var(--dim)">📊 Dados detalhados indisponíveis neste momento</div>'}
       </div>
