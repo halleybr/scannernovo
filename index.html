@@ -221,7 +221,7 @@
       <section id="active-sec" style="display:none">
         <h2>🎯 ENTRADAS ATIVAS <span class="n" id="active-count"></span></h2>
         <div class="tbl-wrap"><table id="active"><thead>
-          <tr><th>Jogo</th><th>Min</th><th>Placar</th><th>Entrada</th><th>Odd</th><th>Score</th><th>Status</th></tr>
+          <tr><th>Jogo</th><th>Min</th><th>Placar</th><th>Entrada</th><th>Odd</th><th>Score</th><th>Entrou</th><th>Status</th></tr>
         </thead><tbody></tbody></table></div>
       </section>
 
@@ -286,7 +286,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T11:15-03:00";
+const BUILD = "2026-08-19T14:35-03:00";
 const MIN_SCORE = 70;
 const MIN_MINUTE = 12;
 const MOM_WINDOW = 10;
@@ -1885,6 +1885,7 @@ function renderActive() {
       <td>${open ? `<span class="entry-tag hl">${entryIcon} ${esc(h.market)}</span>` : esc(h.market)}</td>
       <td>${esc(h.odd)}${h.prob != null ? ` <span class="badge" style="background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.35)">${h.prob}%</span>` : ''}</td>
       <td>${(m._sc && m._sc.score) || h.score}/100</td>
+      <td class="a-time">${new Date(h.ts).toLocaleTimeString("pt-BR")}</td>
       <td>${status}</td>
     </tr>`;
   }).join("");
