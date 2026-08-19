@@ -286,7 +286,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T14:42-03:00";
+const BUILD = "2026-08-19T17:46-03:00";
 const MIN_SCORE = 70;
 const MIN_MINUTE = 12;
 const MOM_WINDOW = 10;
@@ -1839,6 +1839,7 @@ function renderActive() {
   }
   const seen = new Map();
   for (const h of state.history) {
+    if (h.result != null) continue; // resolvida (green/red) → sai da lista de ativas
     const m = (h.id != null && liveMatches.has(h.id))
       ? liveMatches.get(h.id)
       : liveByName.get(h.match) || null;
@@ -1859,7 +1860,7 @@ function renderActive() {
   sec.style.display = "block";
   $("active-count").textContent =
     entries.length + (entries.length === 1 ? " entrada ativa" : " entradas ativas") +
-    " · removidas quando o jogo terminar";
+    " · saem ao virar green/red ou quando o jogo terminar";
   // Telegram: só envia quando a aposta é PUBLICADA nas ENTRADAS ATIVAS (aberta e jogo ao vivo)
   let sentAny = false;
   for (const { h, m } of entries) {
