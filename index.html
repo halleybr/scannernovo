@@ -286,8 +286,10 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T17:46-03:00";
+const BUILD = "2026-08-19T18:22-03:00";
 const MIN_SCORE = 70;
+const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
+const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
 const MIN_MINUTE = 12;
 const MOM_WINDOW = 10;
 const HISTORY_LIMIT = 200;
@@ -1395,8 +1397,22 @@ function dedupeHistory() {
   }
 }
 
+/* Filtro de qualidade: só as MELHORES apostas viram entrada (e são enviadas).
+   Exige score alto (>= MIN_ENTRY_SCORE) e, para o mercado, OU valor real
+   (kelly/edge — entradas "forte"/"interessante") OU probabilidade alta
+   (aposta de elite). Evita o flood de entradas de jogos apenas "razoáveis". */
+function isBestEntry(sc, sug) {
+  const p = sug.primary;
+  if (!p || sc.score < MIN_ENTRY_SCORE) return false;
+  const hasValue = (p.kellyPct != null && p.kellyPct >= 2) || (p.valueEdge != null && p.valueEdge >= 5);
+  const minProb = MIN_ENTRY_PROB[p.type] ?? 55;
+  if (hasValue) return p.prob == null || p.prob >= minProb;
+  return p.prob != null && p.prob >= minProb;
+}
+
 function ensureEntry(m, sc, sug) {
   if (!sug.primary) return;
+  if (!isBestEntry(sc, sug)) return;   // filtro: só as melhores entradas
   const now = Date.now();
   const windowMs = 15 * 60 * 1000;
   if (state.history.some(h => h.result == null && h.market === sug.primary.label && sameMatch(h, m) && (now - new Date(h.ts).getTime() < windowMs))) return;
