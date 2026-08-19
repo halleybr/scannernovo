@@ -290,7 +290,7 @@
    ============================================================ */
 
 const API = "https://robobet.app/api";
-const BUILD = "2026-08-19T19:18-03:00";
+const BUILD = "2026-08-19T19:40-03:00";
 const MIN_SCORE = 70;
 const MIN_ENTRY_SCORE = 80;   // só vira entrada (e é enviada) se score >= 80 e com prob/valor
 const MIN_ENTRY_PROB = { goals: 70, corners: 55, btts: 55, combo: 60, "next-goal": 75 };
@@ -875,6 +875,7 @@ function suggestEntry(m, sc) {
   const f = m.forecast || {};
   const over = f.over_goals || {};
   const cornersExp = (f.corners && f.corners.match_total && numOrNull(f.corners.match_total.value)) ?? null;
+  sc.cornersExp = cornersExp;   // expectativa de escanteios da RoboBet (/events/today)
   const goals = m.scoreHome + m.scoreAway;
   const minute = Math.max(m.minute, 1);
   const injuryTime = m.injuryTime || 0;
@@ -943,56 +944,61 @@ function suggestEntry(m, sc) {
 
    // escanteios: mercado aberto + pressão real do gráfico de cantos
    const momCornersSignal = sc.momAvail && sc.momMag >= 20 && (sc.num.sot >= 5 || sc.num.dang >= 25);
+   // Dica da RoboBet para o jogo: alerta de escanteio (indicators.corners_alert)
+   // e/ou expectativa alta de cantos (match_total >= 9) vinda do /events/today
+   const rbCornerTip = !!sc.cornersAlert || (sc.cornersExp != null && sc.cornersExp >= 9);
    // MACD xG: o time que pressiona tem histograma positivo e subindo → escanteios a caminho
    const macdCornerSignal = !!sc.macdPressTeam && sc.macdRising &&
      ((sc.macdPressTeam === "home" ? sc.macdHistHome : sc.macdHistAway) > 0.5);
-   const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || momCornersSignal || macdCornerSignal ||
+   const cpSig = sc.aboveMin >= 3 || sc.xcMom >= 0.6 || sc.cornersAlert || rbCornerTip || momCornersSignal || macdCornerSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-   const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || momCornersSignal || macdCornerSignal ||
+   const cpStrong = sc.xcMom >= 1.0 || sc.aboveMin >= 5 || sc.cornersAlert || rbCornerTip || momCornersSignal || macdCornerSignal ||
      (sc.cornersChart && sc.forceMax >= sc.cornersChart.threshold);
-   const cornerMinuteGate = m.minute >= 55 || (m.minute >= 35 && sc.xcRising && sc.aboveMin >= 2);
-   if (cornerMinuteGate && (sc.xcRising || cpStrong || momCornersSignal) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong || (momCornersSignal && sc.xcRising)) && !almostEnded) {
-      const openCorners = state.history.some(h =>
-        h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
-      if (!openCorners) {
-        let line = null;
-        if (cornersExp != null) {
-          line = Math.floor(cornersExp) + 1.5;
-        } else if (sc.xcMom >= 0.4) {
-          line = sc.num.corners + 1.5;
-        }
-        if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5;
-        if (line != null) {
-          const remaining = Math.max(90 - minute, 5);
-          const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
-          if (line > sc.num.corners + maxExtra) line = null;
-        }
-        const cornerWave = sc.num.corners >= 2 && sc.xcRising && sc.aboveMin >= 2;
-        if (line != null && cornerWave) {
-          line = Math.max(line, sc.num.corners + 2.5);
-        }
-        if (line != null) {
-          const cappedLine = Math.min(line, Math.max(sc.num.corners + 1.5, cornersExp ?? line));
-          const cornerOdd = f.corners ? (numOrNull(f.corners.over_line?.market_odd) ?? numOrNull(f.corners.match_total?.market_odd)) : null;
-          const cornerProb = f.corners ? (numOrNull(f.corners.over_line?.probability) ?? numOrNull(f.corners.match_total?.probability)) : null;
-          const cornerEdge = cornerProb != null && cornerOdd != null ? (cornerProb - Math.round((1 / cornerOdd) * 100)) : null;
-          if (cornerEdge != null && cornerEdge < 5 && !cpStrong) {
-            // skip se edge menor que 5% e não for sinal forte
-          } else {
-            out.push({
-              type: "corners",
-              label: `Mais escanteios — Over ${fmt(cappedLine, 1)}`,
-              odd: cornerOdd,
-              prob: cornerProb,
-              edge: cornerEdge,
-              prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0) + (cornerWave ? 2 : 0) + (cpStrong ? 1 : 0),
-              source: sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart'),
-              cornerWave: cornerWave,
-            });
-          }
-        }
-      }
-    }
+   const cornerMinuteGate = m.minute >= 55 || (m.minute >= 35 && sc.xcRising && sc.aboveMin >= 2) ||
+     (rbCornerTip && m.minute >= 30);
+   if (cornerMinuteGate && (sc.xcRising || cpStrong || momCornersSignal || rbCornerTip) && m.hasCornersMarket && cpSig && ((sc.components.corners || 0) >= 50 || cpStrong || rbCornerTip || (momCornersSignal && sc.xcRising)) && !almostEnded) {
+     const openCorners = state.history.some(h =>
+       h.result == null && /^Mais escanteios/.test(h.market) && sameMatch(h, m));
+     if (!openCorners) {
+       let line = null;
+       if (cornersExp != null) {
+         line = Math.floor(cornersExp) + 1.5;
+       } else if (sc.xcMom >= 0.4) {
+         line = sc.num.corners + 1.5;
+       }
+       if (line != null && sc.num.corners >= line) line = sc.num.corners + 1.5;
+       if (line != null) {
+         const remaining = Math.max(90 - minute, 5);
+         const maxExtra = Math.max(2, Math.min(6, Math.round(0.2 * remaining)));
+         if (line > sc.num.corners + maxExtra) line = null;
+       }
+       const cornerWave = sc.num.corners >= 2 && sc.xcRising && sc.aboveMin >= 2;
+       if (line != null && cornerWave) {
+         line = Math.max(line, sc.num.corners + 2.5);
+       }
+       if (line != null) {
+         const cappedLine = Math.min(line, Math.max(sc.num.corners + 1.5, cornersExp ?? line));
+         const cornerOdd = f.corners ? (numOrNull(f.corners.over_line?.market_odd) ?? numOrNull(f.corners.match_total?.market_odd)) : null;
+         const cornerProb = f.corners ? (numOrNull(f.corners.over_line?.probability) ?? numOrNull(f.corners.match_total?.probability)) : null;
+         const cornerEdge = cornerProb != null && cornerOdd != null ? (cornerProb - Math.round((1 / cornerOdd) * 100)) : null;
+         const isRbTip = rbCornerTip;
+         if (cornerEdge != null && cornerEdge < 5 && !cpStrong && !isRbTip) {
+           // skip se edge menor que 5% e não for sinal forte nem dica RoboBet
+         } else {
+           out.push({
+             type: "corners",
+             label: `Mais escanteios — Over ${fmt(cappedLine, 1)}`,
+             odd: cornerOdd,
+             prob: cornerProb,
+             edge: cornerEdge,
+             prio: 3 + ((sc.components.corners || 0) >= 75 ? 1 : 0) + (sc.aboveMin >= 5 || sc.xcMom >= 0.9 ? 1 : 0) + (momCornersSignal ? 1 : 0) + (cornerWave ? 2 : 0) + (cpStrong ? 1 : 0) + (isRbTip ? 1 : 0),
+             source: isRbTip ? 'robo' : (sc.xcRising ? 'xc' : (momCornersSignal ? 'momentum' : 'chart')),
+             cornerWave: cornerWave,
+           });
+         }
+       }
+     }
+   }
 
   // ---- BTTS (Both Teams To Score) ----
   if (sc.bttsCandidate && m.minute >= 20 && !goalsBlocked) {
@@ -1408,6 +1414,13 @@ function dedupeHistory() {
 function isBestEntry(sc, sug) {
   const p = sug.primary;
   if (!p || sc.score < MIN_ENTRY_SCORE) return false;
+  // Escanteios: segue a dica da RoboBet (alert de escanteio ou expectativa alta de
+  // cantos no /events/today) — a própria dica deles é o sinal de valor, mesmo sem
+  // odd/prob calculada disponível.
+  if (p.type === "corners") {
+    const rbCornerTip = !!sc.cornersAlert || (sc.cornersExp != null && sc.cornersExp >= 9);
+    if (rbCornerTip) return p.prob == null || p.prob >= 50;
+  }
   const hasValue = (p.kellyPct != null && p.kellyPct >= 2) || (p.valueEdge != null && p.valueEdge >= 5);
   const minProb = MIN_ENTRY_PROB[p.type] ?? 55;
   if (hasValue) return p.prob == null || p.prob >= minProb;
