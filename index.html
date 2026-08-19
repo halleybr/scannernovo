@@ -368,7 +368,9 @@ async function tick() {
   if (state.paused) return;
   try {
     const inplay = await fetchJSON(API + "/inplay/list.json", 25000, 2);
+    console.log('[ScannerGreen] API retornou:', inplay.events ? inplay.events.length : 0, 'jogos');
     const live = (inplay.events || []).filter(e => e && e.isLive && e.status === "live");
+    console.log('[ScannerGreen] Jogos live após filtro:', live.length);
     const ids = live.map(e => e.id);
     const now = Date.now();
 
